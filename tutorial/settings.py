@@ -26,7 +26,15 @@ SECRET_KEY = 'django-insecure-d--(jxx$$0bgni3o073%4_-uvq0v2oo27go3*5vz!^-xz&8#dh
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    'topicos-epfmfpaxbadrghhj.mexicocentral-01.azurewebsites.net',
+    'localhost',
+    '127.0.0.1'
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://topicos-epfmfpaxbadrghhj.mexicocentral-01.azurewebsites.net',
+]
 
 
 # Application definition
@@ -49,6 +57,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -80,10 +89,18 @@ WSGI_APPLICATION = 'tutorial.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+# Si existe la carpeta persistente de Azure (funciona en Web y en SSH)
+if os.path.exists('/home/site'):
+    # Modo Producción: Guarda la base de datos en la memoria persistente
+    DB_PATH = '/home/site/db.sqlite3'
+else:
+    # Modo Local: Guarda la base de datos en la carpeta del proyecto
+    DB_PATH = BASE_DIR / 'db.sqlite3'
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': DB_PATH,
     }
 }
 
@@ -151,5 +168,10 @@ CORS_ALLOW_ALL_ORIGINS = True
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
-MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+MEDIA_URL = '/media/'
+# Si estamos en Azure, guardamos en el almacenamiento persistente
+if os.path.exists('/home/site'):
+    MEDIA_ROOT = '/home/site/media'
+else:
+    # Si estamos en local, guardamos en la carpeta del proyecto
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

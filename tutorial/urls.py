@@ -1,29 +1,41 @@
-"""
-URL configuration for tutorial project.
-
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
-"""
 from django.contrib import admin
 from django.conf import settings
-from django.urls import path, re_path
+from django.conf.urls.static import static
+from django.urls import include, path, re_path
 from django.views.static import serve
+from tutorial.quickstart.views import (
+    CustomAuthToken,
+    LogoutView,
+    RegisterView,
+    ResetTokenView,
+    me,
+)
+
+auth_urlpatterns = [
+    path('api-token-auth/', CustomAuthToken.as_view(), name='api_token_auth'),
+    path('api-register/', RegisterView.as_view(), name='api_register'),
+    path('me/', me, name='me'),
+    path('logout/', LogoutView.as_view(), name='logout'),
+    path('reset-token/', ResetTokenView.as_view(), name='reset_token'),
+]
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
+    # Auth endpoints at root
+    *auth_urlpatterns,
+    # Router endpoints at root
+    path('', include('tutorial.quickstart.urls')),
+    # Also available under /api/ prefix for standard REST convention
+    path('api/', include('tutorial.quickstart.urls')),
+    path('api/', include(auth_urlpatterns)),
 ]
 
-# Sirve archivos media en producción (Azure no tiene servidor de archivos aparte)
+# Media files serving (works in development and Azure Web App)
 urlpatterns += [
     re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

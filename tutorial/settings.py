@@ -11,16 +11,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-d--(jxx$$0bgni3o073%4_-uvq0v2oo27go3*5vz!^-xz&8#dh'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Producción = existe la carpeta persistente de Azure (funciona en Web y en SSH)
+IS_PRODUCTION = os.path.exists('/home/site')
 
-# Permitir localhost, 127.0.0.1, Azure y cualquier IP local de la red LAN (para Expo móvil)
-ALLOWED_HOSTS = [
-    '*',
-    'localhost',
-    '127.0.0.1',
-    'topicos-epfmfpaxbadrghhj.mexicocentral-01.azurewebsites.net',
-]
+DEBUG = not IS_PRODUCTION
+
+if IS_PRODUCTION:
+    ALLOWED_HOSTS = ['topicos-epfmfpaxbadrghhj.mexicocentral-01.azurewebsites.net']
+else:
+    # Cualquier IP de la red LAN, para probar desde Expo en el celular
+    ALLOWED_HOSTS = ['*']
 
 CSRF_TRUSTED_ORIGINS = [
     'https://topicos-epfmfpaxbadrghhj.mexicocentral-01.azurewebsites.net',
@@ -77,8 +77,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'tutorial.wsgi.application'
 
 # Database
-# Si existe la carpeta persistente de Azure (funciona en Web y en SSH)
-if os.path.exists('/home/site'):
+if IS_PRODUCTION:
     DB_PATH = '/home/site/db.sqlite3'
 else:
     DB_PATH = BASE_DIR / 'db.sqlite3'
@@ -119,7 +118,7 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files (Imágenes de muebles y subida de archivos)
 MEDIA_URL = '/media/'
-if os.path.exists('/home/site'):
+if IS_PRODUCTION:
     MEDIA_ROOT = '/home/site/media'
 else:
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

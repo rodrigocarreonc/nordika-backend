@@ -1,5 +1,8 @@
+from datetime import timedelta
 from decimal import Decimal
-from django.db import models
+from django.db import models, transaction
+from django.db.models import F
+from django.utils import timezone
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 
@@ -96,40 +99,79 @@ class Favorito(models.Model):
         return f"{self.usuario.username} -> {self.mueble.nombre}"
 
 
-class MovimientoInventario(models.Model):
-    TIPO_CHOICES = [
-        ('ENTRADA', 'Entrada (Compra/Devolución)'),
-        ('SALIDA', 'Salida (Venta/Merma)'),
-        ('AJUSTE', 'Ajuste de inventario'),
+class Apartado(models.Model):
+    PENDIENTE = 'PENDIENTE'
+    ACEPTADO = 'ACEPTADO'
+    RECHAZADO = 'RECHAZADO'
+    CANCELADO = 'CANCELADO'
+    ESTADO_CHOICES = [
+        (PENDIENTE, 'Pendiente'),
+        (ACEPTADO, 'Aceptado'),
+        (RECHAZADO, 'Rechazado'),
+        (CANCELADO, 'Cancelado (vencido)'),
     ]
+    DIAS_VIGENCIA = 5
 
-    mueble = models.ForeignKey(
-        Mueble,
-        related_name='movimientos',
-        on_delete=models.CASCADE
-    )
-    tipo_movimiento = models.CharField(max_length=10, choices=TIPO_CHOICES)
-    cantidad = models.PositiveIntegerField(
-        validators=[MinValueValidator(1)],
-        help_text="Cantidad de artículos en el movimiento"
-    )
-    motivo = models.CharField(
-        max_length=255,
-        help_text="Ej. Compra al proveedor, Venta en tienda, Daño en almacén"
-    )
     usuario = models.ForeignKey(
         User,
-        related_name='movimientos_inventario',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True
+        related_name='apartados',
+        on_delete=models.CASCADE
     )
-    fecha_movimiento = models.DateTimeField(auto_now_add=True)
+    mueble = models.ForeignKey(
+        Mueble,
+        related_name='apartados',
+        on_delete=models.PROTECT
+    )
+    cantidad = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    estado = models.CharField(max_length=10, choices=ESTADO_CHOICES, default=PENDIENTE)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = 'Movimiento de Inventario'
-        verbose_name_plural = 'Movimientos de Inventario'
-        ordering = ['-fecha_movimiento']
+        verbose_name = 'Apartado'
+        verbose_name_plural = 'Apartados'
+        ordering = ['-creado_en']
 
     def __str__(self):
-        return f"{self.tipo_movimiento} de {self.cantidad} - {self.mueble.nombre}"
+        return f"{self.codigo} - {self.usuario.username} aparta {self.cantidad} x {self.mueble.nombre} ({self.estado})"
+
+    @property
+    def codigo(self):
+        return f"APT-{self.id}"
+
+    @property
+    def expira_en(self):
+        return self.creado_en + timedelta(days=self.DIAS_VIGENCIA)
+
+    @classmethod
+    def cancelar_vencidos(cls):
+        """Cancela los apartados pendientes con más de DIAS_VIGENCIA días y devuelve su cantidad al stock."""
+        limite = timezone.now() - timedelta(days=cls.DIAS_VIGENCIA)
+        with transaction.atomic():
+            vencidos = list(cls.objects.select_for_update().filter(estado=cls.PENDIENTE, creado_en__lte=limite))
+            for apartado in vencidos:
+                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
+            if vencidos:
+                cls.objects.filter(pk__in=[a.pk for a in vencidos]).update(
+                    estado=cls.CANCELADO, actualizado_en=timezone.now()
+                )
+        return len(vencidos)
+
+
+class Venta(models.Model):
+    apartado = models.OneToOneField(
+        Apartado,
+        related_name='venta',
+        on_delete=models.PROTECT
+    )
+    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    fecha_venta = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Venta'
+        verbose_name_plural = 'Ventas'
+        ordering = ['-fecha_venta']
+
+    def __str__(self):
+        return f"Venta #{self.id} - {self.apartado.mueble.nombre} - ${self.total}"

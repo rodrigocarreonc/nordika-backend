@@ -1,12 +1,14 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from .models import Categoria, Favorito, MovimientoInventario, Mueble, Proveedor
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 
 
 class NordikaBackendTests(APITestCase):
@@ -138,7 +140,7 @@ class NordikaBackendTests(APITestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    # 6. CUSTOM ACTIONS (Favoritos & Movimiento Inventario)
+    # 6. CUSTOM ACTIONS (Favoritos)
     def test_toggle_favorito(self):
         # Toggle ON
         toggle_res = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
@@ -156,27 +158,87 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(toggle_res2.status_code, status.HTTP_200_OK)
         self.assertFalse(toggle_res2.data['is_favorito'])
 
-    def test_registrar_movimiento_inventario(self):
-        initial_stock = self.mueble.stock
-        # Entrada
-        res = self.client.post(f'/muebles/{self.mueble.id}/registrar_movimiento/', {
-            'tipo_movimiento': 'ENTRADA',
-            'cantidad': 5,
-            'motivo': 'Compra de reposición'
-        })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.mueble.refresh_from_db()
-        self.assertEqual(self.mueble.stock, initial_stock + 5)
-
-        # Salida con stock insuficiente falla
-        res_fail = self.client.post(f'/muebles/{self.mueble.id}/registrar_movimiento/', {
-            'tipo_movimiento': 'SALIDA',
-            'cantidad': 999,
-            'motivo': 'Venta excesiva'
-        })
-        self.assertEqual(res_fail.status_code, status.HTTP_400_BAD_REQUEST)
-
     def test_get_requires_token(self):
         self.client.credentials()
         for url in ['/muebles/', '/muebles/destacados/', '/categorias/', '/proveedores/']:
             self.assertEqual(self.client.get(url).status_code, status.HTTP_401_UNAUTHORIZED, url)
+
+    # 7. APARTADOS
+    def _admin_client(self):
+        admin = User.objects.create_user('admin_test', password='x', is_staff=True)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
+
+    def _apartar(self, cantidad):
+        return self.client.post('/apartados/', {'mueble_id': self.mueble.id, 'cantidad': cantidad})
+
+    def test_apartado_descuenta_stock(self):
+        res = self._apartar(3)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['estado'], 'PENDIENTE')
+        self.assertEqual(res.data['codigo'], f"APT-{res.data['id']}")
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 7)
+
+    def test_apartado_stock_insuficiente(self):
+        self.assertEqual(self._apartar(11).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._apartar(0).status_code, status.HTTP_400_BAD_REQUEST)
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+    def test_usuario_no_puede_aceptar_ni_ver_ajenos(self):
+        apartado_id = self._apartar(2).data['id']
+        self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_403_FORBIDDEN)
+        otro = User.objects.create_user('otro', password='x')
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=otro).key)
+        self.assertEqual(self.client.get(f'/apartados/{apartado_id}/').status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_aceptar_registra_venta(self):
+        apartado_id = self._apartar(2).data['id']
+        self._admin_client()
+        res = self.client.post(f'/apartados/{apartado_id}/aceptar/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['estado'], 'ACEPTADO')
+        venta = Venta.objects.get(apartado_id=apartado_id)
+        self.assertEqual(venta.total, Decimal('19998.00'))
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 8)
+        # No se puede resolver dos veces
+        self.assertEqual(self.client.post(f'/apartados/{apartado_id}/rechazar/').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rechazar_libera_stock(self):
+        apartado_id = self._apartar(4).data['id']
+        self._admin_client()
+        res = self.client.post(f'/apartados/{apartado_id}/rechazar/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['estado'], 'RECHAZADO')
+        self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+    def test_apartado_expira_a_los_5_dias(self):
+        res = self._apartar(3)
+        apartado_id = res.data['id']
+        creado = Apartado.objects.get(pk=apartado_id).creado_en
+        self.assertEqual(datetime.fromisoformat(res.data['expira_en']), creado + timedelta(days=5))
+
+        # Aún vigente: no se cancela
+        Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=4, hours=23))
+        self.assertEqual(self.client.get(f'/apartados/{apartado_id}/').data['estado'], 'PENDIENTE')
+
+        # Vencido: se cancela y libera el stock
+        Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=5, minutes=1))
+        res = self.client.get(f'/apartados/{apartado_id}/')
+        self.assertEqual(res.data['estado'], 'CANCELADO')
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+        # Ya no se puede aceptar
+        self._admin_client()
+        self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
+
+    def test_muebles_libera_stock_vencido(self):
+        apartado_id = self._apartar(4).data['id']
+        Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=6))
+        res = self.client.get(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.data['stock'], 10)

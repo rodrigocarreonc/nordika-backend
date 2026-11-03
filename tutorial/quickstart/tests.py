@@ -1,12 +1,14 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from .models import Categoria, Favorito, Mueble, Proveedor, Venta
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 
 
 class NordikaBackendTests(APITestCase):
@@ -212,3 +214,31 @@ class NordikaBackendTests(APITestCase):
         self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
         self.mueble.refresh_from_db()
         self.assertEqual(self.mueble.stock, 10)
+
+    def test_apartado_expira_a_los_5_dias(self):
+        res = self._apartar(3)
+        apartado_id = res.data['id']
+        creado = Apartado.objects.get(pk=apartado_id).creado_en
+        self.assertEqual(datetime.fromisoformat(res.data['expira_en']), creado + timedelta(days=5))
+
+        # Aún vigente: no se cancela
+        Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=4, hours=23))
+        self.assertEqual(self.client.get(f'/apartados/{apartado_id}/').data['estado'], 'PENDIENTE')
+
+        # Vencido: se cancela y libera el stock
+        Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=5, minutes=1))
+        res = self.client.get(f'/apartados/{apartado_id}/')
+        self.assertEqual(res.data['estado'], 'CANCELADO')
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+        # Ya no se puede aceptar
+        self._admin_client()
+        self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
+
+    def test_muebles_libera_stock_vencido(self):
+        apartado_id = self._apartar(4).data['id']
+        Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=6))
+        res = self.client.get(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.data['stock'], 10)

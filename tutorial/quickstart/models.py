@@ -1,5 +1,8 @@
+from datetime import timedelta
 from decimal import Decimal
-from django.db import models
+from django.db import models, transaction
+from django.db.models import F
+from django.utils import timezone
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 
@@ -100,11 +103,14 @@ class Apartado(models.Model):
     PENDIENTE = 'PENDIENTE'
     ACEPTADO = 'ACEPTADO'
     RECHAZADO = 'RECHAZADO'
+    CANCELADO = 'CANCELADO'
     ESTADO_CHOICES = [
         (PENDIENTE, 'Pendiente'),
         (ACEPTADO, 'Aceptado'),
         (RECHAZADO, 'Rechazado'),
+        (CANCELADO, 'Cancelado (vencido)'),
     ]
+    DIAS_VIGENCIA = 5
 
     usuario = models.ForeignKey(
         User,
@@ -132,6 +138,24 @@ class Apartado(models.Model):
     @property
     def codigo(self):
         return f"APT-{self.id}"
+
+    @property
+    def expira_en(self):
+        return self.creado_en + timedelta(days=self.DIAS_VIGENCIA)
+
+    @classmethod
+    def cancelar_vencidos(cls):
+        """Cancela los apartados pendientes con más de DIAS_VIGENCIA días y devuelve su cantidad al stock."""
+        limite = timezone.now() - timedelta(days=cls.DIAS_VIGENCIA)
+        with transaction.atomic():
+            vencidos = list(cls.objects.select_for_update().filter(estado=cls.PENDIENTE, creado_en__lte=limite))
+            for apartado in vencidos:
+                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
+            if vencidos:
+                cls.objects.filter(pk__in=[a.pk for a in vencidos]).update(
+                    estado=cls.CANCELADO, actualizado_en=timezone.now()
+                )
+        return len(vencidos)
 
 
 class Venta(models.Model):

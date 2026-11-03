@@ -194,12 +194,13 @@ class ApartadoSerializer(serializers.ModelSerializer):
         write_only=True
     )
     usuario_username = serializers.CharField(source='usuario.username', read_only=True)
+    codigo = serializers.ReadOnlyField()
     venta = VentaSerializer(read_only=True)
 
     class Meta:
         model = Apartado
         fields = [
-            'id', 'usuario', 'usuario_username', 'mueble', 'mueble_id',
+            'id', 'codigo', 'usuario', 'usuario_username', 'mueble', 'mueble_id',
             'cantidad', 'estado', 'venta', 'creado_en', 'actualizado_en',
         ]
         read_only_fields = ['id', 'usuario', 'estado', 'creado_en', 'actualizado_en']

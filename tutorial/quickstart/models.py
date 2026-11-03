@@ -127,7 +127,11 @@ class Apartado(models.Model):
         ordering = ['-creado_en']
 
     def __str__(self):
-        return f"{self.usuario.username} aparta {self.cantidad} x {self.mueble.nombre} ({self.estado})"
+        return f"{self.codigo} - {self.usuario.username} aparta {self.cantidad} x {self.mueble.nombre} ({self.estado})"
+
+    @property
+    def codigo(self):
+        return f"APT-{self.id}"
 
 
 class Venta(models.Model):

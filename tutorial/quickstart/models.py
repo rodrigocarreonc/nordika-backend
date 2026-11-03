@@ -94,3 +94,56 @@ class Favorito(models.Model):
 
     def __str__(self):
         return f"{self.usuario.username} -> {self.mueble.nombre}"
+
+
+class Apartado(models.Model):
+    PENDIENTE = 'PENDIENTE'
+    ACEPTADO = 'ACEPTADO'
+    RECHAZADO = 'RECHAZADO'
+    ESTADO_CHOICES = [
+        (PENDIENTE, 'Pendiente'),
+        (ACEPTADO, 'Aceptado'),
+        (RECHAZADO, 'Rechazado'),
+    ]
+
+    usuario = models.ForeignKey(
+        User,
+        related_name='apartados',
+        on_delete=models.CASCADE
+    )
+    mueble = models.ForeignKey(
+        Mueble,
+        related_name='apartados',
+        on_delete=models.PROTECT
+    )
+    cantidad = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    estado = models.CharField(max_length=10, choices=ESTADO_CHOICES, default=PENDIENTE)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Apartado'
+        verbose_name_plural = 'Apartados'
+        ordering = ['-creado_en']
+
+    def __str__(self):
+        return f"{self.usuario.username} aparta {self.cantidad} x {self.mueble.nombre} ({self.estado})"
+
+
+class Venta(models.Model):
+    apartado = models.OneToOneField(
+        Apartado,
+        related_name='venta',
+        on_delete=models.PROTECT
+    )
+    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    fecha_venta = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Venta'
+        verbose_name_plural = 'Ventas'
+        ordering = ['-fecha_venta']
+
+    def __str__(self):
+        return f"Venta #{self.id} - {self.apartado.mueble.nombre} - ${self.total}"

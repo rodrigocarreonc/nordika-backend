@@ -1,15 +1,18 @@
 from django.contrib.auth.models import User
+from django.db import transaction
+from django.db.models import F
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters, permissions, status, viewsets
+from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 
 from .filters import MuebleFilter
-from .models import Categoria, Favorito, Mueble, Proveedor
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 from .pagination import ConfigurablePageNumberPagination
 from .serializers import (
+    ApartadoSerializer,
     CategoriaSerializer,
     FavoritoSerializer,
     MuebleSerializer,
@@ -236,3 +239,61 @@ class FavoritoViewSet(viewsets.ModelViewSet):
         if user.is_staff:
             return Favorito.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor').all()
         return Favorito.objects.filter(usuario=user).select_related('mueble', 'mueble__categoria', 'mueble__proveedor')
+
+
+# ==========================================
+# 5. APARTADOS
+# ==========================================
+
+class ApartadoViewSet(mixins.CreateModelMixin,
+                      mixins.ListModelMixin,
+                      mixins.RetrieveModelMixin,
+                      viewsets.GenericViewSet):
+    """
+    Apartados de muebles:
+    - El usuario crea un apartado (se descuenta el stock) y ve solo los suyos.
+    - El administrador ve todos y puede aceptarlos (se registra la venta)
+      o rechazarlos (se devuelve la cantidad al stock).
+    """
+    serializer_class = ApartadoSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = ConfigurablePageNumberPagination
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['estado', 'mueble']
+    search_fields = ['mueble__nombre', 'usuario__username']
+    ordering_fields = ['creado_en', 'cantidad']
+    ordering = ['-creado_en']
+
+    def get_queryset(self):
+        qs = Apartado.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor', 'venta')
+        if self.request.user.is_staff:
+            return qs
+        return qs.filter(usuario=self.request.user)
+
+    def _resolver(self, pk, nuevo_estado):
+        with transaction.atomic():
+            apartado = Apartado.objects.select_for_update().filter(pk=pk).first()
+            if apartado is None:
+                return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+            if apartado.estado != Apartado.PENDIENTE:
+                return Response(
+                    {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if nuevo_estado == Apartado.ACEPTADO:
+                precio = apartado.mueble.precio
+                Venta.objects.create(apartado=apartado, precio_unitario=precio, total=precio * apartado.cantidad)
+            else:
+                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
+            apartado.estado = nuevo_estado
+            apartado.save(update_fields=['estado', 'actualizado_en'])
+        apartado = self.get_queryset().get(pk=apartado.pk)
+        return Response(self.get_serializer(apartado).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    def aceptar(self, request, pk=None):
+        return self._resolver(pk, Apartado.ACEPTADO)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    def rechazar(self, request, pk=None):
+        return self._resolver(pk, Apartado.RECHAZADO)

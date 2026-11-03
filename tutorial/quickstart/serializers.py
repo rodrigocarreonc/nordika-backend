@@ -1,8 +1,10 @@
 from decimal import Decimal
 from django.contrib.auth.models import User
+from django.db import transaction
+from django.db.models import F
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
-from .models import Proveedor, Categoria, Mueble, Favorito
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -176,3 +178,49 @@ class FavoritoSerializer(serializers.ModelSerializer):
         user = self.context['request'].user
         validated_data['usuario'] = user
         return super().create(validated_data)
+
+
+class VentaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Venta
+        fields = ['id', 'precio_unitario', 'total', 'fecha_venta']
+
+
+class ApartadoSerializer(serializers.ModelSerializer):
+    mueble = MuebleSerializer(read_only=True)
+    mueble_id = serializers.PrimaryKeyRelatedField(
+        queryset=Mueble.objects.all(),
+        source='mueble',
+        write_only=True
+    )
+    usuario_username = serializers.CharField(source='usuario.username', read_only=True)
+    venta = VentaSerializer(read_only=True)
+
+    class Meta:
+        model = Apartado
+        fields = [
+            'id', 'usuario', 'usuario_username', 'mueble', 'mueble_id',
+            'cantidad', 'estado', 'venta', 'creado_en', 'actualizado_en',
+        ]
+        read_only_fields = ['id', 'usuario', 'estado', 'creado_en', 'actualizado_en']
+
+    def validate_cantidad(self, value):
+        if value < 1:
+            raise serializers.ValidationError("La cantidad debe ser mayor que 0.")
+        return value
+
+    def create(self, validated_data):
+        mueble = validated_data['mueble']
+        cantidad = validated_data['cantidad']
+        with transaction.atomic():
+            # Descuento condicional en una sola consulta: evita sobre-apartar con peticiones concurrentes.
+            updated = Mueble.objects.filter(pk=mueble.pk, stock__gte=cantidad).update(stock=F('stock') - cantidad)
+            if not updated:
+                mueble.refresh_from_db()
+                raise serializers.ValidationError({
+                    'cantidad': f"Stock insuficiente. El stock actual es de {mueble.stock} unidades."
+                })
+            validated_data['usuario'] = self.context['request'].user
+            apartado = super().create(validated_data)
+        apartado.mueble.refresh_from_db()
+        return apartado

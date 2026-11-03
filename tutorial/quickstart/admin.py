@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Categoria, Favorito, Mueble, Proveedor
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 
 admin.site.site_header = "Nordika Mueblería - Administración"
 admin.site.site_title = "Nordika Admin"
@@ -123,3 +123,30 @@ class FavoritoAdmin(admin.ModelAdmin):
     list_filter = ('fecha_agregado',)
     search_fields = ('usuario__username', 'usuario__email', 'mueble__nombre')
     readonly_fields = ('fecha_agregado',)
+
+
+@admin.register(Apartado)
+class ApartadoAdmin(admin.ModelAdmin):
+    # Solo lectura: aceptar/rechazar va por la API para mantener stock y ventas consistentes.
+    list_display = ('id', 'usuario', 'mueble', 'cantidad', 'estado', 'creado_en')
+    list_filter = ('estado', 'creado_en')
+    search_fields = ('usuario__username', 'mueble__nombre')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Venta)
+class VentaAdmin(admin.ModelAdmin):
+    list_display = ('id', 'apartado', 'precio_unitario', 'total', 'fecha_venta')
+    list_filter = ('fecha_venta',)
+    search_fields = ('apartado__usuario__username', 'apartado__mueble__nombre')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

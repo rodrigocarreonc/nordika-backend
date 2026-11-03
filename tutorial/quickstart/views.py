@@ -6,13 +6,12 @@ from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 
-from .filters import MuebleFilter, MovimientoInventarioFilter
-from .models import Categoria, Favorito, MovimientoInventario, Mueble, Proveedor
+from .filters import MuebleFilter
+from .models import Categoria, Favorito, Mueble, Proveedor
 from .pagination import ConfigurablePageNumberPagination
 from .serializers import (
     CategoriaSerializer,
     FavoritoSerializer,
-    MovimientoInventarioSerializer,
     MuebleSerializer,
     ProveedorSerializer,
     RegisterSerializer,
@@ -162,7 +161,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
     - Filtros por categoría, proveedor, rango de precio (precio_min, precio_max) y en_stock.
     - Ordenamiento por precio, stock, nombre, creado_en.
     - Paginación configurable.
-    - Custom actions: toggle_favorito, mis_favoritos, destacados, registrar_movimiento.
+    - Custom actions: toggle_favorito, mis_favoritos, destacados.
     """
     queryset = Mueble.objects.select_related('categoria', 'proveedor').all()
     serializer_class = MuebleSerializer
@@ -222,30 +221,6 @@ class MuebleViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(destacados, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
-    def registrar_movimiento(self, request, pk=None):
-        """
-        Registra un movimiento de inventario directamente para este mueble.
-        """
-        mueble = self.get_object()
-        data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
-        cleaned_data = {}
-        for k, v in data.items():
-            cleaned_data[k] = v[0] if isinstance(v, list) and len(v) == 1 else v
-        cleaned_data['mueble_id'] = mueble.id
-
-        serializer = MovimientoInventarioSerializer(
-            data=cleaned_data,
-            context={'request': request}
-        )
-        serializer.is_valid(raise_exception=True)
-        movimiento = serializer.save()
-        return Response({
-            'movimiento': MovimientoInventarioSerializer(movimiento).data,
-            'stock_actual': mueble.stock,
-            'detail': 'Movimiento registrado correctamente.'
-        }, status=status.HTTP_201_CREATED)
-
 
 # ==========================================
 # 4. FAVORITOS
@@ -261,19 +236,3 @@ class FavoritoViewSet(viewsets.ModelViewSet):
         if user.is_staff:
             return Favorito.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor').all()
         return Favorito.objects.filter(usuario=user).select_related('mueble', 'mueble__categoria', 'mueble__proveedor')
-
-
-# ==========================================
-# 5. MOVIMIENTOS DE INVENTARIO
-# ==========================================
-
-class MovimientoInventarioViewSet(viewsets.ModelViewSet):
-    queryset = MovimientoInventario.objects.select_related('mueble', 'usuario').all()
-    serializer_class = MovimientoInventarioSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    pagination_class = ConfigurablePageNumberPagination
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_class = MovimientoInventarioFilter
-    search_fields = ['mueble__nombre', 'motivo', 'usuario__username']
-    ordering_fields = ['fecha_movimiento', 'cantidad']
-    ordering = ['-fecha_movimiento']

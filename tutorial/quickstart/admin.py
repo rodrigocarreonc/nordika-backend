@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Categoria, Favorito, MovimientoInventario, Mueble, Proveedor
+from .models import Categoria, Favorito, Mueble, Proveedor
 
 admin.site.site_header = "Nordika Mueblería - Administración"
 admin.site.site_title = "Nordika Admin"
@@ -13,14 +13,6 @@ class MuebleInline(admin.TabularInline):
     fields = ('nombre', 'precio', 'stock', 'creado_en')
     readonly_fields = ('creado_en',)
     show_change_link = True
-
-
-class MovimientoInventarioInline(admin.TabularInline):
-    model = MovimientoInventario
-    extra = 0
-    fields = ('tipo_movimiento', 'cantidad', 'motivo', 'usuario', 'fecha_movimiento')
-    readonly_fields = ('fecha_movimiento',)
-    can_delete = False
 
 
 @admin.register(Proveedor)
@@ -69,7 +61,6 @@ class MuebleAdmin(admin.ModelAdmin):
     search_fields = ('nombre', 'descripcion', 'categoria__nombre', 'proveedor__nombre')
     list_editable = ()
     readonly_fields = ('imagen_preview_grande', 'creado_en', 'actualizado_en')
-    inlines = [MovimientoInventarioInline]
 
     fieldsets = (
         ('Información General', {
@@ -132,24 +123,3 @@ class FavoritoAdmin(admin.ModelAdmin):
     list_filter = ('fecha_agregado',)
     search_fields = ('usuario__username', 'usuario__email', 'mueble__nombre')
     readonly_fields = ('fecha_agregado',)
-
-
-@admin.register(MovimientoInventario)
-class MovimientoInventarioAdmin(admin.ModelAdmin):
-    list_display = ('id', 'tipo_badge', 'mueble', 'cantidad', 'motivo', 'usuario', 'fecha_movimiento')
-    list_filter = ('tipo_movimiento', 'fecha_movimiento')
-    search_fields = ('mueble__nombre', 'motivo', 'usuario__username')
-    readonly_fields = ('fecha_movimiento',)
-
-    def tipo_badge(self, obj):
-        colors = {
-            'ENTRADA': '#16a34a',
-            'SALIDA': '#dc2626',
-            'AJUSTE': '#2563eb',
-        }
-        color = colors.get(obj.tipo_movimiento, '#4b5563')
-        return format_html(
-            '<span style="background-color: {}; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{}</span>',
-            color, obj.tipo_movimiento
-        )
-    tipo_badge.short_description = 'Tipo'

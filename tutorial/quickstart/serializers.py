@@ -2,7 +2,7 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
-from .models import Proveedor, Categoria, Mueble, Favorito, MovimientoInventario
+from .models import Proveedor, Categoria, Mueble, Favorito
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -175,62 +175,4 @@ class FavoritoSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user = self.context['request'].user
         validated_data['usuario'] = user
-        return super().create(validated_data)
-
-
-class MovimientoInventarioSerializer(serializers.ModelSerializer):
-    mueble = MuebleSerializer(read_only=True)
-    mueble_id = serializers.PrimaryKeyRelatedField(
-        queryset=Mueble.objects.all(),
-        source='mueble',
-        write_only=True
-    )
-    usuario_username = serializers.CharField(source='usuario.username', read_only=True)
-
-    class Meta:
-        model = MovimientoInventario
-        fields = [
-            'id',
-            'mueble',
-            'mueble_id',
-            'tipo_movimiento',
-            'cantidad',
-            'motivo',
-            'usuario',
-            'usuario_username',
-            'fecha_movimiento',
-        ]
-        read_only_fields = ['id', 'usuario', 'fecha_movimiento']
-
-    def validate(self, attrs):
-        mueble = attrs.get('mueble')
-        tipo = attrs.get('tipo_movimiento')
-        cantidad = attrs.get('cantidad')
-
-        if cantidad <= 0:
-            raise serializers.ValidationError({'cantidad': "La cantidad debe ser mayor que 0."})
-
-        if tipo == 'SALIDA' and mueble.stock < cantidad:
-            raise serializers.ValidationError({
-                'cantidad': f"Stock insuficiente. El stock actual es de {mueble.stock} unidades."
-            })
-        return attrs
-
-    def create(self, validated_data):
-        request = self.context.get('request')
-        if request and request.user and request.user.is_authenticated:
-            validated_data['usuario'] = request.user
-
-        mueble = validated_data['mueble']
-        tipo = validated_data['tipo_movimiento']
-        cantidad = validated_data['cantidad']
-
-        if tipo == 'ENTRADA':
-            mueble.stock += cantidad
-        elif tipo == 'SALIDA':
-            mueble.stock -= cantidad
-        elif tipo == 'AJUSTE':
-            mueble.stock = cantidad
-        mueble.save()
-
         return super().create(validated_data)

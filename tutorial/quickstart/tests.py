@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from .models import Categoria, Favorito, Mueble, Proveedor
+from .models import Categoria, Favorito, Mueble, Proveedor, Venta
 
 
 class NordikaBackendTests(APITestCase):
@@ -160,3 +160,54 @@ class NordikaBackendTests(APITestCase):
         self.client.credentials()
         for url in ['/muebles/', '/muebles/destacados/', '/categorias/', '/proveedores/']:
             self.assertEqual(self.client.get(url).status_code, status.HTTP_401_UNAUTHORIZED, url)
+
+    # 7. APARTADOS
+    def _admin_client(self):
+        admin = User.objects.create_user('admin_test', password='x', is_staff=True)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
+
+    def _apartar(self, cantidad):
+        return self.client.post('/apartados/', {'mueble_id': self.mueble.id, 'cantidad': cantidad})
+
+    def test_apartado_descuenta_stock(self):
+        res = self._apartar(3)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['estado'], 'PENDIENTE')
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 7)
+
+    def test_apartado_stock_insuficiente(self):
+        self.assertEqual(self._apartar(11).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._apartar(0).status_code, status.HTTP_400_BAD_REQUEST)
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+    def test_usuario_no_puede_aceptar_ni_ver_ajenos(self):
+        apartado_id = self._apartar(2).data['id']
+        self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_403_FORBIDDEN)
+        otro = User.objects.create_user('otro', password='x')
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=otro).key)
+        self.assertEqual(self.client.get(f'/apartados/{apartado_id}/').status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_aceptar_registra_venta(self):
+        apartado_id = self._apartar(2).data['id']
+        self._admin_client()
+        res = self.client.post(f'/apartados/{apartado_id}/aceptar/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['estado'], 'ACEPTADO')
+        venta = Venta.objects.get(apartado_id=apartado_id)
+        self.assertEqual(venta.total, Decimal('19998.00'))
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 8)
+        # No se puede resolver dos veces
+        self.assertEqual(self.client.post(f'/apartados/{apartado_id}/rechazar/').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rechazar_libera_stock(self):
+        apartado_id = self._apartar(4).data['id']
+        self._admin_client()
+        res = self.client.post(f'/apartados/{apartado_id}/rechazar/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['estado'], 'RECHAZADO')
+        self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)

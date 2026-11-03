@@ -9,7 +9,6 @@ from rest_framework.response import Response
 from .filters import MuebleFilter, MovimientoInventarioFilter
 from .models import Categoria, Favorito, MovimientoInventario, Mueble, Proveedor
 from .pagination import ConfigurablePageNumberPagination
-from .permissions import IsAuthenticatedOrReadOnly
 from .serializers import (
     CategoriaSerializer,
     FavoritoSerializer,
@@ -135,7 +134,7 @@ class ResetTokenView(APIView):
 class ProveedorViewSet(viewsets.ModelViewSet):
     queryset = Proveedor.objects.all().order_by('nombre')
     serializer_class = ProveedorSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'contacto', 'email', 'telefono']
@@ -145,7 +144,7 @@ class ProveedorViewSet(viewsets.ModelViewSet):
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all().order_by('nombre')
     serializer_class = CategoriaSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'descripcion']
@@ -167,7 +166,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
     """
     queryset = Mueble.objects.select_related('categoria', 'proveedor').all()
     serializer_class = MuebleSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = MuebleFilter
@@ -214,7 +213,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(muebles, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get'])
     def destacados(self, request):
         """
         Devuelve los muebles destacados (los primeros 6 con stock disponible).

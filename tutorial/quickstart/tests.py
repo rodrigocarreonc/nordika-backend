@@ -175,3 +175,8 @@ class NordikaBackendTests(APITestCase):
             'motivo': 'Venta excesiva'
         })
         self.assertEqual(res_fail.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_get_requires_token(self):
+        self.client.credentials()
+        for url in ['/muebles/', '/muebles/destacados/', '/categorias/', '/proveedores/']:
+            self.assertEqual(self.client.get(url).status_code, status.HTTP_401_UNAUTHORIZED, url)

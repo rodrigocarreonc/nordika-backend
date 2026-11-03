@@ -176,6 +176,11 @@ class MuebleViewSet(viewsets.ModelViewSet):
     ordering_fields = ['precio', 'stock', 'creado_en', 'nombre']
     ordering = ['-creado_en']
 
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # Libera el stock de apartados vencidos antes de mostrarlo.
+        Apartado.cancelar_vencidos()
+
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def toggle_favorito(self, request, pk=None):
         """
@@ -254,6 +259,7 @@ class ApartadoViewSet(mixins.CreateModelMixin,
     - El usuario crea un apartado (se descuenta el stock) y ve solo los suyos.
     - El administrador ve todos y puede aceptarlos (se registra la venta)
       o rechazarlos (se devuelve la cantidad al stock).
+    - Un apartado pendiente vence a los 5 días: se cancela y su cantidad vuelve al stock.
     """
     serializer_class = ApartadoSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -263,6 +269,11 @@ class ApartadoViewSet(mixins.CreateModelMixin,
     search_fields = ['mueble__nombre', 'usuario__username']
     ordering_fields = ['creado_en', 'cantidad']
     ordering = ['-creado_en']
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # shortcut: los vencidos se cancelan al consultar la API, no a la hora exacta; si se necesita puntualidad, mover a una tarea programada.
+        Apartado.cancelar_vencidos()
 
     def get_queryset(self):
         qs = Apartado.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor', 'venta')

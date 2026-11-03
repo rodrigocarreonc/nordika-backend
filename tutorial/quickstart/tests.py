@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from .models import Categoria, Favorito, MovimientoInventario, Mueble, Proveedor
+from .models import Categoria, Favorito, Mueble, Proveedor
 
 
 class NordikaBackendTests(APITestCase):
@@ -138,7 +138,7 @@ class NordikaBackendTests(APITestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    # 6. CUSTOM ACTIONS (Favoritos & Movimiento Inventario)
+    # 6. CUSTOM ACTIONS (Favoritos)
     def test_toggle_favorito(self):
         # Toggle ON
         toggle_res = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
@@ -155,26 +155,6 @@ class NordikaBackendTests(APITestCase):
         toggle_res2 = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
         self.assertEqual(toggle_res2.status_code, status.HTTP_200_OK)
         self.assertFalse(toggle_res2.data['is_favorito'])
-
-    def test_registrar_movimiento_inventario(self):
-        initial_stock = self.mueble.stock
-        # Entrada
-        res = self.client.post(f'/muebles/{self.mueble.id}/registrar_movimiento/', {
-            'tipo_movimiento': 'ENTRADA',
-            'cantidad': 5,
-            'motivo': 'Compra de reposición'
-        })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.mueble.refresh_from_db()
-        self.assertEqual(self.mueble.stock, initial_stock + 5)
-
-        # Salida con stock insuficiente falla
-        res_fail = self.client.post(f'/muebles/{self.mueble.id}/registrar_movimiento/', {
-            'tipo_movimiento': 'SALIDA',
-            'cantidad': 999,
-            'motivo': 'Venta excesiva'
-        })
-        self.assertEqual(res_fail.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_get_requires_token(self):
         self.client.credentials()

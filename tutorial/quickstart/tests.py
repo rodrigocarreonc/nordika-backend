@@ -173,6 +173,7 @@ class NordikaBackendTests(APITestCase):
         res = self._apartar(3)
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual(res.data['estado'], 'PENDIENTE')
+        self.assertEqual(res.data['codigo'], f"APT-{res.data['id']}")
         self.mueble.refresh_from_db()
         self.assertEqual(self.mueble.stock, 7)
 

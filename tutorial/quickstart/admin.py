@@ -128,7 +128,7 @@ class FavoritoAdmin(admin.ModelAdmin):
 @admin.register(Apartado)
 class ApartadoAdmin(admin.ModelAdmin):
     # Solo lectura: aceptar/rechazar va por la API para mantener stock y ventas consistentes.
-    list_display = ('id', 'usuario', 'mueble', 'cantidad', 'estado', 'creado_en')
+    list_display = ('codigo', 'usuario', 'mueble', 'cantidad', 'estado', 'creado_en')
     list_filter = ('estado', 'creado_en')
     search_fields = ('usuario__username', 'mueble__nombre')
 

@@ -137,7 +137,7 @@ class ProveedorViewSet(viewsets.ModelViewSet):
     queryset = Proveedor.objects.all().order_by('nombre')
     serializer_class = ProveedorSerializer
     permission_classes = [permissions.IsAuthenticated]
-    pagination_class = ConfigurablePageNumberPagination
+    pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'contacto', 'email', 'telefono']
     ordering_fields = ['nombre', 'creado_en']
@@ -147,7 +147,7 @@ class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all().order_by('nombre')
     serializer_class = CategoriaSerializer
     permission_classes = [permissions.IsAuthenticated]
-    pagination_class = ConfigurablePageNumberPagination
+    pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'descripcion']
     ordering_fields = ['nombre']

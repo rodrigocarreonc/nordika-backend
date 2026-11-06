@@ -11,16 +11,6 @@ class IsAdminOrReadOnly(permissions.BasePermission):
         return bool(request.user and request.user.is_staff)
 
 
-class IsAuthenticatedOrReadOnly(permissions.BasePermission):
-    """
-    Allow safe methods for anyone, write methods for authenticated users.
-    """
-    def has_permission(self, request, view):
-        if request.method in permissions.SAFE_METHODS:
-            return True
-        return bool(request.user and request.user.is_authenticated)
-
-
 class IsOwnerOrReadOnly(permissions.BasePermission):
     """
     Custom permission to only allow owners of an object to edit or delete it.

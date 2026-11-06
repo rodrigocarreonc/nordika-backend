@@ -1,19 +1,20 @@
 from django.contrib.auth.models import User
+from django.db import transaction
+from django.db.models import F
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters, permissions, status, viewsets
+from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 
-from .filters import MuebleFilter, MovimientoInventarioFilter
-from .models import Categoria, Favorito, MovimientoInventario, Mueble, Proveedor
+from .filters import MuebleFilter
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 from .pagination import ConfigurablePageNumberPagination
-from .permissions import IsAuthenticatedOrReadOnly
 from .serializers import (
+    ApartadoSerializer,
     CategoriaSerializer,
     FavoritoSerializer,
-    MovimientoInventarioSerializer,
     MuebleSerializer,
     ProveedorSerializer,
     RegisterSerializer,
@@ -135,8 +136,8 @@ class ResetTokenView(APIView):
 class ProveedorViewSet(viewsets.ModelViewSet):
     queryset = Proveedor.objects.all().order_by('nombre')
     serializer_class = ProveedorSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
-    pagination_class = ConfigurablePageNumberPagination
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'contacto', 'email', 'telefono']
     ordering_fields = ['nombre', 'creado_en']
@@ -145,8 +146,8 @@ class ProveedorViewSet(viewsets.ModelViewSet):
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all().order_by('nombre')
     serializer_class = CategoriaSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
-    pagination_class = ConfigurablePageNumberPagination
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'descripcion']
     ordering_fields = ['nombre']
@@ -163,17 +164,22 @@ class MuebleViewSet(viewsets.ModelViewSet):
     - Filtros por categoría, proveedor, rango de precio (precio_min, precio_max) y en_stock.
     - Ordenamiento por precio, stock, nombre, creado_en.
     - Paginación configurable.
-    - Custom actions: toggle_favorito, mis_favoritos, destacados, registrar_movimiento.
+    - Custom actions: toggle_favorito, mis_favoritos, destacados.
     """
     queryset = Mueble.objects.select_related('categoria', 'proveedor').all()
     serializer_class = MuebleSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = MuebleFilter
     search_fields = ['nombre', 'descripcion', 'categoria__nombre', 'proveedor__nombre']
     ordering_fields = ['precio', 'stock', 'creado_en', 'nombre']
     ordering = ['-creado_en']
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # Libera el stock de apartados vencidos antes de mostrarlo.
+        Apartado.cancelar_vencidos()
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def toggle_favorito(self, request, pk=None):
@@ -214,7 +220,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(muebles, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get'])
     def destacados(self, request):
         """
         Devuelve los muebles destacados (los primeros 6 con stock disponible).
@@ -222,30 +228,6 @@ class MuebleViewSet(viewsets.ModelViewSet):
         destacados = Mueble.objects.filter(stock__gt=0).select_related('categoria', 'proveedor').order_by('-actualizado_en')[:6]
         serializer = self.get_serializer(destacados, many=True)
         return Response(serializer.data)
-
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
-    def registrar_movimiento(self, request, pk=None):
-        """
-        Registra un movimiento de inventario directamente para este mueble.
-        """
-        mueble = self.get_object()
-        data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
-        cleaned_data = {}
-        for k, v in data.items():
-            cleaned_data[k] = v[0] if isinstance(v, list) and len(v) == 1 else v
-        cleaned_data['mueble_id'] = mueble.id
-
-        serializer = MovimientoInventarioSerializer(
-            data=cleaned_data,
-            context={'request': request}
-        )
-        serializer.is_valid(raise_exception=True)
-        movimiento = serializer.save()
-        return Response({
-            'movimiento': MovimientoInventarioSerializer(movimiento).data,
-            'stock_actual': mueble.stock,
-            'detail': 'Movimiento registrado correctamente.'
-        }, status=status.HTTP_201_CREATED)
 
 
 # ==========================================
@@ -265,16 +247,64 @@ class FavoritoViewSet(viewsets.ModelViewSet):
 
 
 # ==========================================
-# 5. MOVIMIENTOS DE INVENTARIO
+# 5. APARTADOS
 # ==========================================
 
-class MovimientoInventarioViewSet(viewsets.ModelViewSet):
-    queryset = MovimientoInventario.objects.select_related('mueble', 'usuario').all()
-    serializer_class = MovimientoInventarioSerializer
+class ApartadoViewSet(mixins.CreateModelMixin,
+                      mixins.ListModelMixin,
+                      mixins.RetrieveModelMixin,
+                      viewsets.GenericViewSet):
+    """
+    Apartados de muebles:
+    - El usuario crea un apartado (se descuenta el stock) y ve solo los suyos.
+    - El administrador ve todos y puede aceptarlos (se registra la venta)
+      o rechazarlos (se devuelve la cantidad al stock).
+    - Un apartado pendiente vence a los 5 días: se cancela y su cantidad vuelve al stock.
+    """
+    serializer_class = ApartadoSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_class = MovimientoInventarioFilter
-    search_fields = ['mueble__nombre', 'motivo', 'usuario__username']
-    ordering_fields = ['fecha_movimiento', 'cantidad']
-    ordering = ['-fecha_movimiento']
+    filterset_fields = ['estado', 'mueble']
+    search_fields = ['mueble__nombre', 'usuario__username']
+    ordering_fields = ['creado_en', 'cantidad']
+    ordering = ['-creado_en']
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # shortcut: los vencidos se cancelan al consultar la API, no a la hora exacta; si se necesita puntualidad, mover a una tarea programada.
+        Apartado.cancelar_vencidos()
+
+    def get_queryset(self):
+        qs = Apartado.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor', 'venta')
+        if self.request.user.is_staff:
+            return qs
+        return qs.filter(usuario=self.request.user)
+
+    def _resolver(self, pk, nuevo_estado):
+        with transaction.atomic():
+            apartado = Apartado.objects.select_for_update().filter(pk=pk).first()
+            if apartado is None:
+                return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+            if apartado.estado != Apartado.PENDIENTE:
+                return Response(
+                    {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if nuevo_estado == Apartado.ACEPTADO:
+                precio = apartado.mueble.precio
+                Venta.objects.create(apartado=apartado, precio_unitario=precio, total=precio * apartado.cantidad)
+            else:
+                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
+            apartado.estado = nuevo_estado
+            apartado.save(update_fields=['estado', 'actualizado_en'])
+        apartado = self.get_queryset().get(pk=apartado.pk)
+        return Response(self.get_serializer(apartado).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    def aceptar(self, request, pk=None):
+        return self._resolver(pk, Apartado.ACEPTADO)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    def rechazar(self, request, pk=None):
+        return self._resolver(pk, Apartado.RECHAZADO)

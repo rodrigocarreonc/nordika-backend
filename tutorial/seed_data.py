@@ -13,7 +13,7 @@ django.setup()
 from decimal import Decimal
 from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
-from tutorial.quickstart.models import Proveedor, Categoria, Mueble, Favorito, MovimientoInventario
+from tutorial.quickstart.models import Proveedor, Categoria, Mueble, Favorito
 from django.core.files.base import ContentFile
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -280,26 +280,6 @@ def seed():
     Favorito.objects.get_or_create(usuario=customer_user, mueble=muebles_creados[4])
     print("Favoritos iniciales asociados a usuario 'gael'.")
 
-    # 6. Movimientos de inventario iniciales
-    movimientos_data = [
-        ('ENTRADA', 10, 'Recepción de pedido inicial de fábrica', admin_user, muebles_creados[0]),
-        ('SALIDA', 2, 'Venta en sala de exhibición', admin_user, muebles_creados[0]),
-        ('ENTRADA', 15, 'Importación lote nórdico Dinamarca', admin_user, muebles_creados[1]),
-        ('SALIDA', 3, 'Envío a cliente en Monterrey', admin_user, muebles_creados[1]),
-        ('ENTRADA', 6, 'Llegada de taller de ebanistería', admin_user, muebles_creados[2]),
-        ('AJUSTE', 5, 'Conteo físico mensual de almacén', admin_user, muebles_creados[2]),
-    ]
-    for tipo, cant, mot, usr, mueble in movimientos_data:
-        MovimientoInventario.objects.get_or_create(
-            mueble=mueble,
-            tipo_movimiento=tipo,
-            motivo=mot,
-            defaults={
-                'cantidad': cant,
-                'usuario': usr
-            }
-        )
-    print("Movimientos de inventario registrados.")
     print("¡Base de datos poblada exitosamente!")
 
 

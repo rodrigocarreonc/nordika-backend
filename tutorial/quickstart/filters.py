@@ -1,5 +1,5 @@
 import django_filters
-from .models import Mueble, MovimientoInventario
+from .models import Mueble
 
 
 class MuebleFilter(django_filters.FilterSet):
@@ -20,14 +20,3 @@ class MuebleFilter(django_filters.FilterSet):
         elif value is False:
             return queryset.filter(stock=0)
         return queryset
-
-
-class MovimientoInventarioFilter(django_filters.FilterSet):
-    mueble = django_filters.NumberFilter(field_name='mueble__id')
-    tipo = django_filters.CharFilter(field_name='tipo_movimiento', lookup_expr='iexact')
-    fecha_desde = django_filters.DateTimeFilter(field_name='fecha_movimiento', lookup_expr='gte')
-    fecha_hasta = django_filters.DateTimeFilter(field_name='fecha_movimiento', lookup_expr='lte')
-
-    class Meta:
-        model = MovimientoInventario
-        fields = ['mueble', 'tipo', 'fecha_desde', 'fecha_hasta']

@@ -129,6 +129,19 @@ class NordikaBackendTests(APITestCase):
         self.assertIn('results', response.data)
         self.assertIn('total_pages', response.data)
 
+    def test_categorias_y_proveedores_sin_paginacion(self):
+        # Más de 100 (el máximo de page_size) para comprobar que llegan todos.
+        Categoria.objects.bulk_create([Categoria(nombre=f'Cat {i:03}') for i in range(120)])
+        Proveedor.objects.bulk_create([Proveedor(nombre=f'Prov {i:03}') for i in range(120)])
+        for url, total in [('/categorias/', Categoria.objects.count()), ('/proveedores/', Proveedor.objects.count())]:
+            response = self.client.get(f'{url}?page_size=10')
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertIsInstance(response.data, list)
+            self.assertEqual(len(response.data), total)
+        # La búsqueda sigue funcionando sin paginación.
+        response = self.client.get('/categorias/?search=Cat 119')
+        self.assertEqual([c['nombre'] for c in response.data], ['Cat 119'])
+
     # 5. VALIDACIONES
     def test_mueble_validation_negative_price(self):
         response = self.client.post('/muebles/', {

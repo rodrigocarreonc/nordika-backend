@@ -1,5 +1,5 @@
 import django_filters
-from .models import Mueble
+from .models import Apartado, Mueble
 
 
 class MuebleFilter(django_filters.FilterSet):
@@ -20,3 +20,22 @@ class MuebleFilter(django_filters.FilterSet):
         elif value is False:
             return queryset.filter(stock=0)
         return queryset
+
+
+class ApartadoFilter(django_filters.FilterSet):
+    estado = django_filters.CharFilter(field_name='estado')
+    estado__in = django_filters.BaseInFilter(field_name='estado')
+    historial = django_filters.BooleanFilter(method='filter_historial')
+    mueble = django_filters.NumberFilter(field_name='mueble')
+
+    class Meta:
+        model = Apartado
+        fields = ['estado', 'mueble', 'historial']
+
+    def filter_historial(self, queryset, name, value):
+        if value is True:
+            return queryset.exclude(estado=Apartado.PENDIENTE)
+        elif value is False:
+            return queryset.filter(estado=Apartado.PENDIENTE)
+        return queryset
+

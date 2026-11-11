@@ -8,7 +8,7 @@ from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 
-from .filters import MuebleFilter
+from .filters import ApartadoFilter, MuebleFilter
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 from .pagination import ConfigurablePageNumberPagination
 from .serializers import (
@@ -18,6 +18,7 @@ from .serializers import (
     MuebleSerializer,
     ProveedorSerializer,
     RegisterSerializer,
+    UserProfileSerializer,
     UserSerializer,
 )
 
@@ -78,24 +79,12 @@ def me(request):
     """
     user = request.user
     if request.method == 'GET':
-        serializer = UserSerializer(user)
+        serializer = UserProfileSerializer(user)
         return Response(serializer.data)
 
-    data = request.data
-    if 'email' in data:
-        email = data['email'].strip().lower()
-        if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
-            return Response({'email': ['Este correo ya está en uso.']}, status=status.HTTP_400_BAD_REQUEST)
-        user.email = email
-
-    if 'first_name' in data:
-        user.first_name = data['first_name']
-
-    if 'last_name' in data:
-        user.last_name = data['last_name']
-
-    user.save()
-    serializer = UserSerializer(user)
+    serializer = UserProfileSerializer(user, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -265,7 +254,7 @@ class ApartadoViewSet(mixins.CreateModelMixin,
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['estado', 'mueble']
+    filterset_class = ApartadoFilter
     search_fields = ['mueble__nombre', 'usuario__username']
     ordering_fields = ['creado_en', 'cantidad']
     ordering = ['-creado_en']

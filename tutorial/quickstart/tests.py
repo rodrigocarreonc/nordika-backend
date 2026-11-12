@@ -81,6 +81,84 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
         self.assertEqual(patch_response.data['first_name'], 'Actualizado')
 
+    def test_user_me_patch_invalid_email_format(self):
+        # Correo inválido (formato erróneo) -> 400
+        for invalid_email in ['hola', 'no-es-correo', 'usuario@', '@dominio.com', 'test@.com']:
+            res = self.client.patch('/me/', {'email': invalid_email}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, f"Falló para: {invalid_email}")
+            self.assertIn('email', res.data)
+
+    def test_user_me_patch_email_non_text(self):
+        # Correo no texto (número, lista, null) -> 400 (nunca 500!)
+        non_text_values = [
+            12345,
+            ['correo@nordika.com'],
+            {'correo': 'nordika'},
+            None,
+        ]
+        for val in non_text_values:
+            res = self.client.patch('/me/', {'email': val}, format='json')
+            self.assertNotEqual(res.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR, f"500 recibido para {val}")
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, f"Falló para: {val}")
+            self.assertIn('email', res.data)
+
+    def test_user_me_patch_duplicate_email(self):
+        # Correo duplicado -> 400
+        User.objects.create_user(
+            username='otro_usuario',
+            email='otro@nordika.com',
+            password='password123'
+        )
+        # Intento de usar el mismo correo de otro usuario
+        res = self.client.patch('/me/', {'email': 'otro@nordika.com'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', res.data)
+
+        # Validación case-insensitive
+        res_upper = self.client.patch('/me/', {'email': 'OTRO@NORDIKA.COM'}, format='json')
+        self.assertEqual(res_upper.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', res_upper.data)
+
+    def test_user_me_patch_empty_email(self):
+        # Correo vacío -> 400
+        for empty_val in ['', '   ']:
+            res = self.client.patch('/me/', {'email': empty_val}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, f"Falló para: {repr(empty_val)}")
+            self.assertIn('email', res.data)
+
+    def test_user_me_patch_username_read_only(self):
+        # Intento de cambiar username -> username no cambia
+        res = self.client.patch('/me/', {'username': 'nuevo_username'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'testuser')
+        self.assertEqual(res.data['username'], 'testuser')
+
+    def test_user_me_patch_valid_update(self):
+        # Actualización válida de first_name, last_name, email -> 200
+        payload = {
+            'first_name': 'NombreActualizado',
+            'last_name': 'ApellidoActualizado',
+            'email': '  NUEVO_CORREO@NORDIKA.COM  '
+        }
+        res = self.client.patch('/me/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.first_name, 'NombreActualizado')
+        self.assertEqual(self.user.last_name, 'ApellidoActualizado')
+        # Normalizado con strip().lower()
+        self.assertEqual(self.user.email, 'nuevo_correo@nordika.com')
+
+        self.assertEqual(res.data['first_name'], 'NombreActualizado')
+        self.assertEqual(res.data['last_name'], 'ApellidoActualizado')
+        self.assertEqual(res.data['email'], 'nuevo_correo@nordika.com')
+        self.assertEqual(res.data['username'], 'testuser')
+
+        # Actualizar con el mismo correo propio no genera error de duplicado
+        res_same_email = self.client.patch('/me/', {'email': 'nuevo_correo@nordika.com'}, format='json')
+        self.assertEqual(res_same_email.status_code, status.HTTP_200_OK)
+
     def test_logout(self):
         response = self.client.post('/logout/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)

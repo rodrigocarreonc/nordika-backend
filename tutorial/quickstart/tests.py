@@ -222,6 +222,7 @@ class NordikaBackendTests(APITestCase):
 
     # 5. VALIDACIONES
     def test_mueble_validation_negative_price(self):
+        self._admin_client()
         response = self.client.post('/muebles/', {
             'nombre': 'Mueble Inválido',
             'descripcion': 'Test',
@@ -256,8 +257,12 @@ class NordikaBackendTests(APITestCase):
 
     # 7. APARTADOS
     def _admin_client(self):
-        admin = User.objects.create_user('admin_test', password='x', is_staff=True)
-        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
+        admin, _ = User.objects.get_or_create(username='admin_test', defaults={'is_staff': True})
+        if not admin.is_staff:
+            admin.is_staff = True
+            admin.save()
+        token, _ = Token.objects.get_or_create(user=admin)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + token.key)
 
     def _apartar(self, cantidad):
         return self.client.post('/apartados/', {'mueble_id': self.mueble.id, 'cantidad': cantidad})
@@ -333,3 +338,132 @@ class NordikaBackendTests(APITestCase):
         Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=6))
         res = self.client.get(f'/muebles/{self.mueble.id}/')
         self.assertEqual(res.data['stock'], 10)
+
+    # 8. ELIMINACIÓN CON DEPENDENCIAS PROTEGIDAS (409 CONFLICT)
+    def test_eliminar_proveedor_con_muebles_responde_409(self):
+        self._admin_client()
+        # self.proveedor tiene self.mueble asociado (1 mueble)
+        res = self.client.delete(f'/proveedores/{self.proveedor.id}/')
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['detail'], 'No se puede eliminar: el proveedor tiene 1 mueble asociado.')
+        self.assertTrue(Proveedor.objects.filter(id=self.proveedor.id).exists())
+
+        # Si tiene más de un mueble asociado (plural)
+        Mueble.objects.create(
+            nombre='Mueble Extra',
+            precio=Decimal('1500.00'),
+            stock=2,
+            categoria=self.categoria,
+            proveedor=self.proveedor
+        )
+        res_plural = self.client.delete(f'/proveedores/{self.proveedor.id}/')
+        self.assertEqual(res_plural.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res_plural.data['detail'], 'No se puede eliminar: el proveedor tiene 2 muebles asociados.')
+
+    def test_eliminar_proveedor_sin_muebles_responde_204(self):
+        self._admin_client()
+        prov_sin_muebles = Proveedor.objects.create(nombre='Proveedor Sin Muebles')
+        res = self.client.delete(f'/proveedores/{prov_sin_muebles.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Proveedor.objects.filter(id=prov_sin_muebles.id).exists())
+
+    def test_eliminar_mueble_con_apartados_responde_409(self):
+        # Crear un apartado asociado a self.mueble
+        self._apartar(2)
+        self._admin_client()
+        res = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['detail'], 'No se puede eliminar: el mueble tiene 1 apartado asociado.')
+        self.assertTrue(Mueble.objects.filter(id=self.mueble.id).exists())
+
+        # Si tiene más de un apartado asociado (plural)
+        # Cambiamos a cliente normal para crear el apartado y volvemos a admin
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + self.token.key)
+        self._apartar(1)
+        self._admin_client()
+        res_plural = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res_plural.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res_plural.data['detail'], 'No se puede eliminar: el mueble tiene 2 apartados asociados.')
+
+    def test_eliminar_mueble_sin_apartados_responde_204(self):
+        self._admin_client()
+        mueble_sin_apartados = Mueble.objects.create(
+            nombre='Mueble Sin Apartados',
+            precio=Decimal('500.00'),
+            stock=5,
+            categoria=self.categoria,
+            proveedor=self.proveedor
+        )
+        res = self.client.delete(f'/muebles/{mueble_sin_apartados.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Mueble.objects.filter(id=mueble_sin_apartados.id).exists())
+
+    # 9. PERMISOS CRUD: SOLO STAFF PUEDE CREAR/EDITAR/ELIMINAR
+    def test_usuario_no_staff_recibe_403_en_crud_proveedor_categoria_mueble(self):
+        # Usuario normal autenticado (no staff)
+        # Proveedores
+        self.assertEqual(self.client.post('/proveedores/', {'nombre': 'Nuevo Prov'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.patch(f'/proveedores/{self.proveedor.id}/', {'nombre': 'Edit'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'/proveedores/{self.proveedor.id}/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Categorías
+        self.assertEqual(self.client.post('/categorias/', {'nombre': 'Nueva Cat'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.patch(f'/categorias/{self.categoria.id}/', {'nombre': 'Edit'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'/categorias/{self.categoria.id}/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Muebles
+        payload_mueble = {
+            'nombre': 'Nuevo Mueble',
+            'precio': '1200.00',
+            'stock': 3,
+            'proveedor_id': self.proveedor.id,
+        }
+        self.assertEqual(self.client.post('/muebles/', payload_mueble).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.patch(f'/muebles/{self.mueble.id}/', {'nombre': 'Edit'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'/muebles/{self.mueble.id}/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Pero SÍ puede leerlos (GET métodos seguros)
+        self.assertEqual(self.client.get('/proveedores/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/categorias/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/muebles/').status_code, status.HTTP_200_OK)
+
+        # Y puede usar acciones de cliente en muebles
+        self.assertEqual(self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/muebles/mis_favoritos/').status_code, status.HTTP_200_OK)
+
+    def test_usuario_staff_puede_hacer_crud_proveedor_categoria_mueble(self):
+        self._admin_client()
+
+        # Proveedor
+        prov_res = self.client.post('/proveedores/', {'nombre': 'Proveedor Admin'})
+        self.assertEqual(prov_res.status_code, status.HTTP_201_CREATED)
+        prov_id = prov_res.data['id']
+        patch_prov = self.client.patch(f'/proveedores/{prov_id}/', {'nombre': 'Proveedor Admin Edit'})
+        self.assertEqual(patch_prov.status_code, status.HTTP_200_OK)
+        del_prov = self.client.delete(f'/proveedores/{prov_id}/')
+        self.assertEqual(del_prov.status_code, status.HTTP_204_NO_CONTENT)
+
+        # Categoría
+        cat_res = self.client.post('/categorias/', {'nombre': 'Categoría Admin'})
+        self.assertEqual(cat_res.status_code, status.HTTP_201_CREATED)
+        cat_id = cat_res.data['id']
+        patch_cat = self.client.patch(f'/categorias/{cat_id}/', {'nombre': 'Categoría Admin Edit'})
+        self.assertEqual(patch_cat.status_code, status.HTTP_200_OK)
+        del_cat = self.client.delete(f'/categorias/{cat_id}/')
+        self.assertEqual(del_cat.status_code, status.HTTP_204_NO_CONTENT)
+
+        # Mueble
+        mueble_res = self.client.post('/muebles/', {
+            'nombre': 'Mueble Creado Por Staff',
+            'descripcion': 'Descripción staff',
+            'precio': '2500.00',
+            'stock': 4,
+            'proveedor_id': self.proveedor.id,
+            'categoria_id': self.categoria.id,
+        })
+        self.assertEqual(mueble_res.status_code, status.HTTP_201_CREATED)
+        mueble_id = mueble_res.data['id']
+        patch_mueble = self.client.patch(f'/muebles/{mueble_id}/', {'nombre': 'Mueble Staff Editado'})
+        self.assertEqual(patch_mueble.status_code, status.HTTP_200_OK)
+        del_mueble = self.client.delete(f'/muebles/{mueble_id}/')
+        self.assertEqual(del_mueble.status_code, status.HTTP_204_NO_CONTENT)

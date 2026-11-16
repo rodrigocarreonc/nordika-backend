@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, ProtectedError
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from .filters import ApartadoFilter, MuebleFilter
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 from .pagination import ConfigurablePageNumberPagination
+from .permissions import IsAdminOrReadOnly
 from .serializers import (
     ApartadoSerializer,
     CategoriaSerializer,
@@ -125,17 +126,28 @@ class ResetTokenView(APIView):
 class ProveedorViewSet(viewsets.ModelViewSet):
     queryset = Proveedor.objects.all().order_by('nombre')
     serializer_class = ProveedorSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
     pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'contacto', 'email', 'telefono']
     ordering_fields = ['nombre', 'creado_en']
 
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError as e:
+            count = len(e.protected_objects)
+            plural = "muebles asociados" if count != 1 else "mueble asociado"
+            return Response(
+                {'detail': f"No se puede eliminar: el proveedor tiene {count} {plural}."},
+                status=status.HTTP_409_CONFLICT
+            )
+
 
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all().order_by('nombre')
     serializer_class = CategoriaSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
     pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['nombre', 'descripcion']
@@ -157,7 +169,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
     """
     queryset = Mueble.objects.select_related('categoria', 'proveedor').all()
     serializer_class = MuebleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = MuebleFilter
@@ -169,6 +181,17 @@ class MuebleViewSet(viewsets.ModelViewSet):
         super().initial(request, *args, **kwargs)
         # Libera el stock de apartados vencidos antes de mostrarlo.
         Apartado.cancelar_vencidos()
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError as e:
+            count = len(e.protected_objects)
+            plural = "apartados asociados" if count != 1 else "apartado asociado"
+            return Response(
+                {'detail': f"No se puede eliminar: el mueble tiene {count} {plural}."},
+                status=status.HTTP_409_CONFLICT
+            )
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def toggle_favorito(self, request, pk=None):

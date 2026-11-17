@@ -281,6 +281,28 @@ class NordikaBackendTests(APITestCase):
         self.mueble.refresh_from_db()
         self.assertEqual(self.mueble.stock, 10)
 
+    def test_admin_no_puede_apartar(self):
+        self._admin_client()
+        res = self._apartar(2)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Apartado.objects.exists())
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+    def test_admin_filtra_activos_e_historial_de_todos(self):
+        pendiente_id = self._apartar(1).data['id']
+        resuelto_id = self._apartar(1).data['id']
+        otro = User.objects.create_user('otro', password='x')
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=otro).key)
+        pendiente_otro_id = self._apartar(1).data['id']
+        self._admin_client()
+        self.client.post(f'/apartados/{resuelto_id}/rechazar/')
+
+        activos = self.client.get('/apartados/', {'estado': 'PENDIENTE'}).data
+        self.assertEqual({a['id'] for a in activos['results']}, {pendiente_id, pendiente_otro_id})
+        historial = self.client.get('/apartados/', {'historial': 'true'}).data
+        self.assertEqual([a['id'] for a in historial['results']], [resuelto_id])
+
     def test_usuario_no_puede_aceptar_ni_ver_ajenos(self):
         apartado_id = self._apartar(2).data['id']
         self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_403_FORBIDDEN)

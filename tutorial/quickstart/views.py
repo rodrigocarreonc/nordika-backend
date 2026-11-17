@@ -6,6 +6,7 @@ from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from .filters import ApartadoFilter, MuebleFilter
@@ -292,6 +293,11 @@ class ApartadoViewSet(mixins.CreateModelMixin,
         if self.request.user.is_staff:
             return qs
         return qs.filter(usuario=self.request.user)
+
+    def perform_create(self, serializer):
+        if self.request.user.is_staff:
+            raise PermissionDenied('El administrador no puede apartar muebles.')
+        serializer.save()
 
     def _resolver(self, pk, nuevo_estado):
         with transaction.atomic():

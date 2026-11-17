@@ -81,6 +81,84 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
         self.assertEqual(patch_response.data['first_name'], 'Actualizado')
 
+    def test_user_me_patch_invalid_email_format(self):
+        # Correo inválido (formato erróneo) -> 400
+        for invalid_email in ['hola', 'no-es-correo', 'usuario@', '@dominio.com', 'test@.com']:
+            res = self.client.patch('/me/', {'email': invalid_email}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, f"Falló para: {invalid_email}")
+            self.assertIn('email', res.data)
+
+    def test_user_me_patch_email_non_text(self):
+        # Correo no texto (número, lista, null) -> 400 (nunca 500!)
+        non_text_values = [
+            12345,
+            ['correo@nordika.com'],
+            {'correo': 'nordika'},
+            None,
+        ]
+        for val in non_text_values:
+            res = self.client.patch('/me/', {'email': val}, format='json')
+            self.assertNotEqual(res.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR, f"500 recibido para {val}")
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, f"Falló para: {val}")
+            self.assertIn('email', res.data)
+
+    def test_user_me_patch_duplicate_email(self):
+        # Correo duplicado -> 400
+        User.objects.create_user(
+            username='otro_usuario',
+            email='otro@nordika.com',
+            password='password123'
+        )
+        # Intento de usar el mismo correo de otro usuario
+        res = self.client.patch('/me/', {'email': 'otro@nordika.com'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', res.data)
+
+        # Validación case-insensitive
+        res_upper = self.client.patch('/me/', {'email': 'OTRO@NORDIKA.COM'}, format='json')
+        self.assertEqual(res_upper.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', res_upper.data)
+
+    def test_user_me_patch_empty_email(self):
+        # Correo vacío -> 400
+        for empty_val in ['', '   ']:
+            res = self.client.patch('/me/', {'email': empty_val}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, f"Falló para: {repr(empty_val)}")
+            self.assertIn('email', res.data)
+
+    def test_user_me_patch_username_read_only(self):
+        # Intento de cambiar username -> username no cambia
+        res = self.client.patch('/me/', {'username': 'nuevo_username'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'testuser')
+        self.assertEqual(res.data['username'], 'testuser')
+
+    def test_user_me_patch_valid_update(self):
+        # Actualización válida de first_name, last_name, email -> 200
+        payload = {
+            'first_name': 'NombreActualizado',
+            'last_name': 'ApellidoActualizado',
+            'email': '  NUEVO_CORREO@NORDIKA.COM  '
+        }
+        res = self.client.patch('/me/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.first_name, 'NombreActualizado')
+        self.assertEqual(self.user.last_name, 'ApellidoActualizado')
+        # Normalizado con strip().lower()
+        self.assertEqual(self.user.email, 'nuevo_correo@nordika.com')
+
+        self.assertEqual(res.data['first_name'], 'NombreActualizado')
+        self.assertEqual(res.data['last_name'], 'ApellidoActualizado')
+        self.assertEqual(res.data['email'], 'nuevo_correo@nordika.com')
+        self.assertEqual(res.data['username'], 'testuser')
+
+        # Actualizar con el mismo correo propio no genera error de duplicado
+        res_same_email = self.client.patch('/me/', {'email': 'nuevo_correo@nordika.com'}, format='json')
+        self.assertEqual(res_same_email.status_code, status.HTTP_200_OK)
+
     def test_logout(self):
         response = self.client.post('/logout/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -144,6 +222,7 @@ class NordikaBackendTests(APITestCase):
 
     # 5. VALIDACIONES
     def test_mueble_validation_negative_price(self):
+        self._admin_client()
         response = self.client.post('/muebles/', {
             'nombre': 'Mueble Inválido',
             'descripcion': 'Test',
@@ -178,8 +257,12 @@ class NordikaBackendTests(APITestCase):
 
     # 7. APARTADOS
     def _admin_client(self):
-        admin = User.objects.create_user('admin_test', password='x', is_staff=True)
-        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
+        admin, _ = User.objects.get_or_create(username='admin_test', defaults={'is_staff': True})
+        if not admin.is_staff:
+            admin.is_staff = True
+            admin.save()
+        token, _ = Token.objects.get_or_create(user=admin)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + token.key)
 
     def _apartar(self, cantidad):
         return self.client.post('/apartados/', {'mueble_id': self.mueble.id, 'cantidad': cantidad})
@@ -197,6 +280,28 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(self._apartar(0).status_code, status.HTTP_400_BAD_REQUEST)
         self.mueble.refresh_from_db()
         self.assertEqual(self.mueble.stock, 10)
+
+    def test_admin_no_puede_apartar(self):
+        self._admin_client()
+        res = self._apartar(2)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Apartado.objects.exists())
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+    def test_admin_filtra_activos_e_historial_de_todos(self):
+        pendiente_id = self._apartar(1).data['id']
+        resuelto_id = self._apartar(1).data['id']
+        otro = User.objects.create_user('otro', password='x')
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=otro).key)
+        pendiente_otro_id = self._apartar(1).data['id']
+        self._admin_client()
+        self.client.post(f'/apartados/{resuelto_id}/rechazar/')
+
+        activos = self.client.get('/apartados/', {'estado': 'PENDIENTE'}).data
+        self.assertEqual({a['id'] for a in activos['results']}, {pendiente_id, pendiente_otro_id})
+        historial = self.client.get('/apartados/', {'historial': 'true'}).data
+        self.assertEqual([a['id'] for a in historial['results']], [resuelto_id])
 
     def test_usuario_no_puede_aceptar_ni_ver_ajenos(self):
         apartado_id = self._apartar(2).data['id']
@@ -255,3 +360,132 @@ class NordikaBackendTests(APITestCase):
         Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=6))
         res = self.client.get(f'/muebles/{self.mueble.id}/')
         self.assertEqual(res.data['stock'], 10)
+
+    # 8. ELIMINACIÓN CON DEPENDENCIAS PROTEGIDAS (409 CONFLICT)
+    def test_eliminar_proveedor_con_muebles_responde_409(self):
+        self._admin_client()
+        # self.proveedor tiene self.mueble asociado (1 mueble)
+        res = self.client.delete(f'/proveedores/{self.proveedor.id}/')
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['detail'], 'No se puede eliminar: el proveedor tiene 1 mueble asociado.')
+        self.assertTrue(Proveedor.objects.filter(id=self.proveedor.id).exists())
+
+        # Si tiene más de un mueble asociado (plural)
+        Mueble.objects.create(
+            nombre='Mueble Extra',
+            precio=Decimal('1500.00'),
+            stock=2,
+            categoria=self.categoria,
+            proveedor=self.proveedor
+        )
+        res_plural = self.client.delete(f'/proveedores/{self.proveedor.id}/')
+        self.assertEqual(res_plural.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res_plural.data['detail'], 'No se puede eliminar: el proveedor tiene 2 muebles asociados.')
+
+    def test_eliminar_proveedor_sin_muebles_responde_204(self):
+        self._admin_client()
+        prov_sin_muebles = Proveedor.objects.create(nombre='Proveedor Sin Muebles')
+        res = self.client.delete(f'/proveedores/{prov_sin_muebles.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Proveedor.objects.filter(id=prov_sin_muebles.id).exists())
+
+    def test_eliminar_mueble_con_apartados_responde_409(self):
+        # Crear un apartado asociado a self.mueble
+        self._apartar(2)
+        self._admin_client()
+        res = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['detail'], 'No se puede eliminar: el mueble tiene 1 apartado asociado.')
+        self.assertTrue(Mueble.objects.filter(id=self.mueble.id).exists())
+
+        # Si tiene más de un apartado asociado (plural)
+        # Cambiamos a cliente normal para crear el apartado y volvemos a admin
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + self.token.key)
+        self._apartar(1)
+        self._admin_client()
+        res_plural = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res_plural.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res_plural.data['detail'], 'No se puede eliminar: el mueble tiene 2 apartados asociados.')
+
+    def test_eliminar_mueble_sin_apartados_responde_204(self):
+        self._admin_client()
+        mueble_sin_apartados = Mueble.objects.create(
+            nombre='Mueble Sin Apartados',
+            precio=Decimal('500.00'),
+            stock=5,
+            categoria=self.categoria,
+            proveedor=self.proveedor
+        )
+        res = self.client.delete(f'/muebles/{mueble_sin_apartados.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Mueble.objects.filter(id=mueble_sin_apartados.id).exists())
+
+    # 9. PERMISOS CRUD: SOLO STAFF PUEDE CREAR/EDITAR/ELIMINAR
+    def test_usuario_no_staff_recibe_403_en_crud_proveedor_categoria_mueble(self):
+        # Usuario normal autenticado (no staff)
+        # Proveedores
+        self.assertEqual(self.client.post('/proveedores/', {'nombre': 'Nuevo Prov'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.patch(f'/proveedores/{self.proveedor.id}/', {'nombre': 'Edit'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'/proveedores/{self.proveedor.id}/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Categorías
+        self.assertEqual(self.client.post('/categorias/', {'nombre': 'Nueva Cat'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.patch(f'/categorias/{self.categoria.id}/', {'nombre': 'Edit'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'/categorias/{self.categoria.id}/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Muebles
+        payload_mueble = {
+            'nombre': 'Nuevo Mueble',
+            'precio': '1200.00',
+            'stock': 3,
+            'proveedor_id': self.proveedor.id,
+        }
+        self.assertEqual(self.client.post('/muebles/', payload_mueble).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.patch(f'/muebles/{self.mueble.id}/', {'nombre': 'Edit'}).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'/muebles/{self.mueble.id}/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Pero SÍ puede leerlos (GET métodos seguros)
+        self.assertEqual(self.client.get('/proveedores/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/categorias/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/muebles/').status_code, status.HTTP_200_OK)
+
+        # Y puede usar acciones de cliente en muebles
+        self.assertEqual(self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/muebles/mis_favoritos/').status_code, status.HTTP_200_OK)
+
+    def test_usuario_staff_puede_hacer_crud_proveedor_categoria_mueble(self):
+        self._admin_client()
+
+        # Proveedor
+        prov_res = self.client.post('/proveedores/', {'nombre': 'Proveedor Admin'})
+        self.assertEqual(prov_res.status_code, status.HTTP_201_CREATED)
+        prov_id = prov_res.data['id']
+        patch_prov = self.client.patch(f'/proveedores/{prov_id}/', {'nombre': 'Proveedor Admin Edit'})
+        self.assertEqual(patch_prov.status_code, status.HTTP_200_OK)
+        del_prov = self.client.delete(f'/proveedores/{prov_id}/')
+        self.assertEqual(del_prov.status_code, status.HTTP_204_NO_CONTENT)
+
+        # Categoría
+        cat_res = self.client.post('/categorias/', {'nombre': 'Categoría Admin'})
+        self.assertEqual(cat_res.status_code, status.HTTP_201_CREATED)
+        cat_id = cat_res.data['id']
+        patch_cat = self.client.patch(f'/categorias/{cat_id}/', {'nombre': 'Categoría Admin Edit'})
+        self.assertEqual(patch_cat.status_code, status.HTTP_200_OK)
+        del_cat = self.client.delete(f'/categorias/{cat_id}/')
+        self.assertEqual(del_cat.status_code, status.HTTP_204_NO_CONTENT)
+
+        # Mueble
+        mueble_res = self.client.post('/muebles/', {
+            'nombre': 'Mueble Creado Por Staff',
+            'descripcion': 'Descripción staff',
+            'precio': '2500.00',
+            'stock': 4,
+            'proveedor_id': self.proveedor.id,
+            'categoria_id': self.categoria.id,
+        })
+        self.assertEqual(mueble_res.status_code, status.HTTP_201_CREATED)
+        mueble_id = mueble_res.data['id']
+        patch_mueble = self.client.patch(f'/muebles/{mueble_id}/', {'nombre': 'Mueble Staff Editado'})
+        self.assertEqual(patch_mueble.status_code, status.HTTP_200_OK)
+        del_mueble = self.client.delete(f'/muebles/{mueble_id}/')
+        self.assertEqual(del_mueble.status_code, status.HTTP_204_NO_CONTENT)

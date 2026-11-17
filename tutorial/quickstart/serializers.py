@@ -14,6 +14,26 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'is_staff', 'date_joined']
 
 
+class UserProfileSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(required=False, allow_blank=False)
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'date_joined']
+        read_only_fields = ['id', 'username', 'is_staff', 'date_joined']
+
+    def validate_email(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError('El correo electrónico no puede estar vacío.')
+        value = value.strip().lower()
+        query = User.objects.filter(email__iexact=value)
+        if self.instance and self.instance.pk:
+            query = query.exclude(pk=self.instance.pk)
+        if query.exists():
+            raise serializers.ValidationError('Este correo ya está en uso.')
+        return value
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)

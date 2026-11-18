@@ -420,6 +420,31 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Mueble.objects.filter(id=mueble_sin_apartados.id).exists())
 
+    def test_eliminar_mueble_con_apartado_rechazado_responde_204(self):
+        apartado_id = self._apartar(2).data['id']
+        self._admin_client()
+        self.client.post(f'/apartados/{apartado_id}/rechazar/')
+        res = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Mueble.objects.filter(id=self.mueble.id).exists())
+
+    def test_eliminar_mueble_con_apartado_cancelado_responde_204(self):
+        apartado_id = self._apartar(1).data['id']
+        Apartado.objects.filter(id=apartado_id).update(estado=Apartado.CANCELADO)
+        self._admin_client()
+        res = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Mueble.objects.filter(id=self.mueble.id).exists())
+
+    def test_eliminar_mueble_con_apartado_aceptado_responde_409(self):
+        apartado_id = self._apartar(1).data['id']
+        self._admin_client()
+        self.client.post(f'/apartados/{apartado_id}/aceptar/')
+        res = self.client.delete(f'/muebles/{self.mueble.id}/')
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['detail'], 'No se puede eliminar: el mueble tiene 1 apartado asociado.')
+        self.assertTrue(Mueble.objects.filter(id=self.mueble.id).exists())
+
     # 9. PERMISOS CRUD: SOLO STAFF PUEDE CREAR/EDITAR/ELIMINAR
     def test_usuario_no_staff_recibe_403_en_crud_proveedor_categoria_mueble(self):
         # Usuario normal autenticado (no staff)
@@ -489,3 +514,67 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(patch_mueble.status_code, status.HTTP_200_OK)
         del_mueble = self.client.delete(f'/muebles/{mueble_id}/')
         self.assertEqual(del_mueble.status_code, status.HTTP_204_NO_CONTENT)
+
+    # 10. APARTADOS CONTACTO & CREAR CLIENTE POR ADMIN
+    def test_apartado_serializer_includes_usuario_contacto(self):
+        self.user.first_name = 'Juan'
+        self.user.last_name = 'Perez'
+        self.user.email = 'juan.perez@nordika.com'
+        self.user.save()
+
+        res = self._apartar(1)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['usuario_username'], self.user.username)
+        self.assertEqual(res.data['usuario_email'], 'juan.perez@nordika.com')
+        self.assertEqual(res.data['usuario_nombre'], 'Juan Perez')
+
+    def test_crear_cliente_admin_exitoso(self):
+        self._admin_client()
+        payload = {
+            'username': 'cliente_nuevo',
+            'email': 'nuevo_cliente@nordika.com',
+            'password': 'password123',
+            'password_confirm': 'password123',
+            'first_name': 'Cliente',
+            'last_name': 'Prueba'
+        }
+        res = self.client.post('/users/crear_cliente/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['username'], 'cliente_nuevo')
+        self.assertEqual(res.data['email'], 'nuevo_cliente@nordika.com')
+        self.assertEqual(res.data['first_name'], 'Cliente')
+        self.assertEqual(res.data['last_name'], 'Prueba')
+        self.assertFalse(res.data['is_staff'])
+
+        nuevo = User.objects.get(username='cliente_nuevo')
+        self.assertFalse(nuevo.is_staff)
+        self.assertTrue(nuevo.check_password('password123'))
+
+    def test_crear_cliente_no_admin_recibe_403(self):
+        payload = {
+            'username': 'cliente_no_auth',
+            'email': 'noauth@nordika.com',
+            'password': 'password123',
+        }
+        res = self.client.post('/users/crear_cliente/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_crear_cliente_validaciones(self):
+        self._admin_client()
+        # Contraseñas no coinciden
+        res1 = self.client.post('/users/crear_cliente/', {
+            'username': 'user1',
+            'email': 'u1@nordika.com',
+            'password': 'password123',
+            'password_confirm': 'diferente',
+        }, format='json')
+        self.assertEqual(res1.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Correo duplicado
+        res2 = self.client.post('/users/crear_cliente/', {
+            'username': 'user2',
+            'email': self.user.email,
+            'password': 'password123',
+        }, format='json')
+        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+

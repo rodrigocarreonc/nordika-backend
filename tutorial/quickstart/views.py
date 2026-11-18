@@ -16,6 +16,7 @@ from .permissions import IsAdminOrReadOnly
 from .serializers import (
     ApartadoSerializer,
     CategoriaSerializer,
+    ClienteCreateSerializer,
     FavoritoSerializer,
     MuebleSerializer,
     ProveedorSerializer,
@@ -69,6 +70,31 @@ class RegisterView(APIView):
                 'last_name': user.last_name,
                 'is_staff': user.is_staff,
                 'detail': 'Usuario registrado exitosamente.'
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CrearClienteView(APIView):
+    """
+    Endpoint para que los administradores registren nuevos clientes (is_staff=False).
+    Requiere IsAdminUser.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        serializer = ClienteCreateSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response({
+                'id': user.id,
+                'user_id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'is_staff': user.is_staff,
+                'date_joined': user.date_joined,
+                'detail': 'Cliente registrado exitosamente.'
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -184,8 +210,27 @@ class MuebleViewSet(viewsets.ModelViewSet):
         Apartado.cancelar_vencidos()
 
     def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Solo bloquean eliminación los apartados pendientes o aceptados/vendidos.
+        # Apartados ya rechazados o cancelados sin venta permiten eliminar el mueble.
+        blocking_count = instance.apartados.exclude(
+            estado__in=[Apartado.RECHAZADO, Apartado.CANCELADO],
+            venta__isnull=True,
+        ).count()
+        if blocking_count > 0:
+            plural = "apartados asociados" if blocking_count != 1 else "apartado asociado"
+            return Response(
+                {'detail': f"No se puede eliminar: el mueble tiene {blocking_count} {plural}."},
+                status=status.HTTP_409_CONFLICT
+            )
         try:
-            return super().destroy(request, *args, **kwargs)
+            with transaction.atomic():
+                instance.apartados.filter(
+                    estado__in=[Apartado.RECHAZADO, Apartado.CANCELADO],
+                    venta__isnull=True,
+                ).delete()
+                instance.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
         except ProtectedError as e:
             count = len(e.protected_objects)
             plural = "apartados asociados" if count != 1 else "apartado asociado"

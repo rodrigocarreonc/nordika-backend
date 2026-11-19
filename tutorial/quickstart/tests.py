@@ -578,3 +578,13 @@ class NordikaBackendTests(APITestCase):
         }, format='json')
         self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_crear_cliente_rutas_canonicas_sin_duplicados(self):
+        self._admin_client()
+        res_api = self.client.post('/api/users/crear_cliente/', {
+            'username': 'cliente_api_prefix',
+            'email': 'api_prefix@nordika.com',
+            'password': 'password123',
+        }, format='json')
+        self.assertEqual(res_api.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(username='cliente_api_prefix').exists())
+

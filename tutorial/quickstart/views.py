@@ -210,6 +210,17 @@ class MuebleViewSet(viewsets.ModelViewSet):
         Apartado.cancelar_vencidos()
 
     def destroy(self, request, *args, **kwargs):
+        """
+        Elimina un mueble respetando la protección de apartados activos o vendidos.
+
+        - Apartado.mueble mantiene on_delete=models.PROTECT para que ningún apartado
+          quede con mueble=null en respuestas de la API (p. ej. apartados.tsx).
+        - Si existen apartados PENDIENTE, ACEPTADO o con Venta asociada, responde
+          409 Conflict y bloquea la eliminación.
+        - Si solo existen apartados RECHAZADO o CANCELADO sin venta, los elimina
+          en la misma transacción atómica antes de borrar el mueble (204 No Content),
+          por lo que esos registros dejan de mostrarse en el historial.
+        """
         instance = self.get_object()
         # Solo bloquean eliminación los apartados pendientes o aceptados/vendidos.
         # Apartados ya rechazados o cancelados sin venta permiten eliminar el mueble.

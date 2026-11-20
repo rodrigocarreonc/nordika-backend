@@ -73,6 +73,62 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
+class ClienteCreateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=6, required=True)
+    password_confirm = serializers.CharField(write_only=True, required=False)
+    email = serializers.EmailField(required=True)
+    username = serializers.CharField(required=True)
+    first_name = serializers.CharField(required=False, allow_blank=True, default='')
+    last_name = serializers.CharField(required=False, allow_blank=True, default='')
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'password', 'password_confirm', 'first_name', 'last_name']
+        read_only_fields = ['id']
+
+    def validate_email(self, value):
+        val = value.strip().lower()
+        if not val:
+            raise serializers.ValidationError("El correo electrónico no puede estar vacío.")
+        if User.objects.filter(email__iexact=val).exists():
+            raise serializers.ValidationError("Este correo electrónico ya está registrado.")
+        return val
+
+    def validate_username(self, value):
+        val = value.strip()
+        if not val:
+            raise serializers.ValidationError("El nombre de usuario no puede estar vacío.")
+        if User.objects.filter(username__iexact=val).exists():
+            raise serializers.ValidationError("Este nombre de usuario ya está en uso.")
+        return val
+
+    def validate_first_name(self, value):
+        return value.strip() if value else ''
+
+    def validate_last_name(self, value):
+        return value.strip() if value else ''
+
+    def validate(self, attrs):
+        password_confirm = attrs.get('password_confirm')
+        if password_confirm and attrs.get('password') != password_confirm:
+            raise serializers.ValidationError({'password_confirm': "Las contraseñas no coinciden."})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop('password_confirm', None)
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data['email'],
+            password=validated_data['password'],
+            first_name=validated_data.get('first_name', ''),
+            last_name=validated_data.get('last_name', ''),
+            is_staff=False,
+            is_superuser=False
+        )
+        Token.objects.get_or_create(user=user)
+        return user
+
+
 class CategoriaSerializer(serializers.ModelSerializer):
     muebles_count = serializers.SerializerMethodField(read_only=True)
 
@@ -214,6 +270,8 @@ class ApartadoSerializer(serializers.ModelSerializer):
         write_only=True
     )
     usuario_username = serializers.CharField(source='usuario.username', read_only=True)
+    usuario_email = serializers.CharField(source='usuario.email', read_only=True)
+    usuario_nombre = serializers.SerializerMethodField(read_only=True)
     codigo = serializers.ReadOnlyField()
     expira_en = serializers.DateTimeField(read_only=True)
     venta = VentaSerializer(read_only=True)
@@ -221,10 +279,18 @@ class ApartadoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Apartado
         fields = [
-            'id', 'codigo', 'usuario', 'usuario_username', 'mueble', 'mueble_id',
-            'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
+            'id', 'codigo', 'usuario', 'usuario_username', 'usuario_email', 'usuario_nombre',
+            'mueble', 'mueble_id', 'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
         ]
         read_only_fields = ['id', 'usuario', 'estado', 'creado_en', 'actualizado_en']
+
+    def get_usuario_nombre(self, obj):
+        if not obj.usuario:
+            return ""
+        first = (obj.usuario.first_name or "").strip()
+        last = (obj.usuario.last_name or "").strip()
+        full = f"{first} {last}".strip()
+        return full
 
     def validate_cantidad(self, value):
         if value < 1:

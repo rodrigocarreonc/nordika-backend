@@ -401,6 +401,21 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
 
+    def test_cerrar_apartado_dos_veces_no_devuelve_stock_doble(self):
+        # Simula dos peticiones que leyeron el mismo pendiente antes de que alguna lo cerrara
+        apartado_id = self._apartar(3).data['id']
+        lectura_1 = Apartado.objects.get(pk=apartado_id)
+        lectura_2 = Apartado.objects.get(pk=apartado_id)
+
+        self.assertTrue(lectura_1.cerrar(Apartado.CANCELADO))
+        self.assertFalse(lectura_2.cerrar(Apartado.RECHAZADO))
+        self.assertFalse(lectura_2.cerrar(Apartado.ACEPTADO))
+
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+        self.assertEqual(Apartado.objects.get(pk=apartado_id).estado, Apartado.CANCELADO)
+        self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
+
     def test_muebles_libera_stock_vencido(self):
         apartado_id = self._apartar(4).data['id']
         Apartado.objects.filter(pk=apartado_id).update(creado_en=timezone.now() - timedelta(days=6))

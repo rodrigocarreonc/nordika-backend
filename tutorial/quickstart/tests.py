@@ -148,6 +148,10 @@ class NordikaBackendTests(APITestCase):
         self.assertFalse(Token.objects.filter(user=self.user).exists())
         apartado.refresh_from_db()
         self.assertEqual(apartado.estado, Apartado.CANCELADO)
+        # El staff ve el apartado marcado como de una cuenta eliminada
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=User.objects.create_user(username='admin_del', password='x', is_staff=True)).key)
+        res = self.client.get(f'/apartados/{apartado.pk}/')
+        self.assertFalse(res.data['usuario_activo'])
         self.mueble.refresh_from_db()
         self.assertEqual(self.mueble.stock, 10)
 

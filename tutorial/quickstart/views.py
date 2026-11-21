@@ -2,8 +2,7 @@ import uuid
 
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import F, ProtectedError
-from django.utils import timezone
+from django.db.models import ProtectedError
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
@@ -13,7 +12,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from .filters import ApartadoFilter, MuebleFilter
-from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor
 from .pagination import ConfigurablePageNumberPagination
 from .permissions import IsAdminOrReadOnly
 from .serializers import (
@@ -119,16 +118,15 @@ def me(request):
             return Response({'detail': 'La contraseña es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
         # Se desactiva en vez de borrar: Venta.apartado es PROTECT y el historial de ventas debe conservarse
         with transaction.atomic():
-            pendientes = list(Apartado.objects.select_for_update().filter(usuario=user, estado=Apartado.PENDIENTE))
-            for apartado in pendientes:
-                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
-            Apartado.objects.filter(pk__in=[a.pk for a in pendientes]).update(estado=Apartado.CANCELADO, actualizado_en=timezone.now())
             # Libera username y email para que puedan volver a registrarse; uuid evita choques con usernames reales
             user.username = f'eliminado_{uuid.uuid4().hex}'
             user.email = ''
             user.is_active = False
             user.save(update_fields=['username', 'email', 'is_active'])
             Token.objects.filter(user=user).delete()
+        # Después de desactivar: si algo falla aquí, los pendientes igual vencen solos a los 5 días
+        for apartado in Apartado.objects.filter(usuario=user, estado=Apartado.PENDIENTE):
+            apartado.cerrar(Apartado.CANCELADO)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     serializer = UserProfileSerializer(user, data=request.data, partial=True)
@@ -397,22 +395,15 @@ class ApartadoViewSet(mixins.CreateModelMixin,
         serializer.save()
 
     def _resolver(self, pk, nuevo_estado):
-        with transaction.atomic():
-            apartado = Apartado.objects.select_for_update().filter(pk=pk).first()
-            if apartado is None:
-                return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
-            if apartado.estado != Apartado.PENDIENTE:
-                return Response(
-                    {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if nuevo_estado == Apartado.ACEPTADO:
-                precio = apartado.mueble.precio
-                Venta.objects.create(apartado=apartado, precio_unitario=precio, total=precio * apartado.cantidad)
-            else:
-                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
-            apartado.estado = nuevo_estado
-            apartado.save(update_fields=['estado', 'actualizado_en'])
+        apartado = Apartado.objects.filter(pk=pk).first()
+        if apartado is None:
+            return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        if not apartado.cerrar(nuevo_estado):
+            apartado.refresh_from_db(fields=['estado'])
+            return Response(
+                {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         apartado = self.get_queryset().get(pk=apartado.pk)
         return Response(self.get_serializer(apartado).data, status=status.HTTP_200_OK)
 

@@ -155,6 +155,12 @@ class NordikaBackendTests(APITestCase):
         res = self.client.post('/api-token-auth/', {'username': 'testuser', 'password': 'testpassword123'})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
+        # El username y el email quedan libres para una cuenta nueva
+        res = self.client.post('/api-register/', {
+            'username': 'testuser', 'email': 'test@nordika.com', 'password': 'otra123',
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
     def test_user_me_patch_empty_email(self):
         # Correo vacío -> 400
         for empty_val in ['', '   ']:

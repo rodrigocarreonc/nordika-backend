@@ -133,6 +133,28 @@ class NordikaBackendTests(APITestCase):
         # El token viejo ya no sirve
         self.assertEqual(self.client.get('/me/').status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_delete_account(self):
+        apartado = Apartado.objects.create(usuario=self.user, mueble=self.mueble, cantidad=3)
+        Mueble.objects.filter(pk=self.mueble.pk).update(stock=7)
+
+        res = self.client.delete('/me/', {'password': 'mala'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(User.objects.get(pk=self.user.pk).is_active)
+
+        res = self.client.delete('/me/', {'password': 'testpassword123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+        self.assertFalse(Token.objects.filter(user=self.user).exists())
+        apartado.refresh_from_db()
+        self.assertEqual(apartado.estado, Apartado.CANCELADO)
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+        self.client.credentials()
+        res = self.client.post('/api-token-auth/', {'username': 'testuser', 'password': 'testpassword123'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_user_me_patch_empty_email(self):
         # Correo vacío -> 400
         for empty_val in ['', '   ']:

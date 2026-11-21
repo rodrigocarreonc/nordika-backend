@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F, ProtectedError
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
@@ -99,16 +100,31 @@ class CrearClienteView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['GET', 'PATCH'])
+@api_view(['GET', 'PATCH', 'DELETE'])
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
     """
-    Obtiene o actualiza el perfil del usuario autenticado.
+    Obtiene, actualiza o elimina (desactiva) el perfil del usuario autenticado.
     """
     user = request.user
     if request.method == 'GET':
         serializer = UserProfileSerializer(user)
         return Response(serializer.data)
+
+    if request.method == 'DELETE':
+        # 400 y no 401: la app cierra sesión ante cualquier 401
+        if not user.check_password(request.data.get('password') or ''):
+            return Response({'detail': 'La contraseña es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Se desactiva en vez de borrar: Venta.apartado es PROTECT y el historial de ventas debe conservarse
+        with transaction.atomic():
+            pendientes = list(Apartado.objects.select_for_update().filter(usuario=user, estado=Apartado.PENDIENTE))
+            for apartado in pendientes:
+                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
+            Apartado.objects.filter(pk__in=[a.pk for a in pendientes]).update(estado=Apartado.CANCELADO, actualizado_en=timezone.now())
+            user.is_active = False
+            user.save(update_fields=['is_active'])
+            Token.objects.filter(user=user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     serializer = UserProfileSerializer(user, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)

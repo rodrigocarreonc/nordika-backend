@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 from django.contrib.auth.models import User
+from django.db.models import QuerySet
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -295,6 +297,27 @@ class NordikaBackendTests(APITestCase):
         toggle_res2 = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
         self.assertEqual(toggle_res2.status_code, status.HTTP_200_OK)
         self.assertFalse(toggle_res2.data['is_favorito'])
+
+    def test_toggle_favorito_doble_toque_no_da_500(self):
+        # Simula un doble toque: la otra petición crea el favorito justo después de que esta
+        # revisó si existía (exists() o delete()) y no encontró nada.
+        ya_creo = []
+
+        def otra_peticion_crea_despues_de(metodo_original):
+            def envoltura(qs):
+                resultado = metodo_original(qs)
+                if qs.model is Favorito and not ya_creo:
+                    ya_creo.append(True)
+                    Favorito.objects.create(usuario=self.user, mueble=self.mueble)
+                return resultado
+            return envoltura
+
+        with patch.object(QuerySet, 'exists', otra_peticion_crea_despues_de(QuerySet.exists)), \
+                patch.object(QuerySet, 'delete', otra_peticion_crea_despues_de(QuerySet.delete)):
+            res = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['is_favorito'])
+        self.assertEqual(Favorito.objects.filter(usuario=self.user, mueble=self.mueble).count(), 1)
 
     def test_get_requires_token(self):
         self.client.credentials()

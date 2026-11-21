@@ -143,19 +143,33 @@ class Apartado(models.Model):
     def expira_en(self):
         return self.creado_en + timedelta(days=self.DIAS_VIGENCIA)
 
+    def cerrar(self, nuevo_estado):
+        """
+        Pasa el apartado de PENDIENTE a nuevo_estado: registra la venta si se acepta o devuelve
+        la cantidad al stock si no. Regresa False si otra petición ya lo había cerrado.
+        """
+        # El UPDATE condicional es el candado: SQLite ignora select_for_update y dos
+        # peticiones podían leer el mismo pendiente y devolver su stock dos veces.
+        with transaction.atomic():
+            cerrado = Apartado.objects.filter(pk=self.pk, estado=self.PENDIENTE).update(
+                estado=nuevo_estado, actualizado_en=timezone.now()
+            )
+            if not cerrado:
+                return False
+            if nuevo_estado == self.ACEPTADO:
+                precio = self.mueble.precio
+                Venta.objects.create(apartado=self, precio_unitario=precio, total=precio * self.cantidad)
+            else:
+                Mueble.objects.filter(pk=self.mueble_id).update(stock=F('stock') + self.cantidad)
+        self.refresh_from_db(fields=['estado', 'actualizado_en'])
+        return True
+
     @classmethod
     def cancelar_vencidos(cls):
         """Cancela los apartados pendientes con más de DIAS_VIGENCIA días y devuelve su cantidad al stock."""
         limite = timezone.now() - timedelta(days=cls.DIAS_VIGENCIA)
-        with transaction.atomic():
-            vencidos = list(cls.objects.select_for_update().filter(estado=cls.PENDIENTE, creado_en__lte=limite))
-            for apartado in vencidos:
-                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
-            if vencidos:
-                cls.objects.filter(pk__in=[a.pk for a in vencidos]).update(
-                    estado=cls.CANCELADO, actualizado_en=timezone.now()
-                )
-        return len(vencidos)
+        vencidos = cls.objects.filter(estado=cls.PENDIENTE, creado_en__lte=limite)
+        return sum(apartado.cerrar(cls.CANCELADO) for apartado in vencidos)
 
 
 class Venta(models.Model):

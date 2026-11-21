@@ -1,3 +1,5 @@
+import uuid
+
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F, ProtectedError
@@ -121,8 +123,11 @@ def me(request):
             for apartado in pendientes:
                 Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
             Apartado.objects.filter(pk__in=[a.pk for a in pendientes]).update(estado=Apartado.CANCELADO, actualizado_en=timezone.now())
+            # Libera username y email para que puedan volver a registrarse; uuid evita choques con usernames reales
+            user.username = f'eliminado_{uuid.uuid4().hex}'
+            user.email = ''
             user.is_active = False
-            user.save(update_fields=['is_active'])
+            user.save(update_fields=['username', 'email', 'is_active'])
             Token.objects.filter(user=user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

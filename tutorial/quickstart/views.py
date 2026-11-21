@@ -131,6 +131,26 @@ class LogoutView(APIView):
         return Response({'detail': 'Sesión cerrada exitosamente.'}, status=status.HTTP_200_OK)
 
 
+class ChangePasswordView(APIView):
+    """
+    Cambia la contraseña del usuario y regenera su token (cierra las demás sesiones).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        new_password = request.data.get('new_password') or ''
+        if not user.check_password(request.data.get('current_password') or ''):
+            return Response({'detail': 'La contraseña actual es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(new_password) < 6:
+            return Response({'detail': 'La nueva contraseña debe tener al menos 6 caracteres.'}, status=status.HTTP_400_BAD_REQUEST)
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+        Token.objects.filter(user=user).delete()
+        token = Token.objects.create(user=user)
+        return Response({'token': token.key, 'detail': 'Contraseña actualizada.'}, status=status.HTTP_200_OK)
+
+
 class ResetTokenView(APIView):
     """
     Regenera el token de autenticación del usuario.

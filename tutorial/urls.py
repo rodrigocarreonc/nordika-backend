@@ -4,6 +4,7 @@ from django.conf.urls.static import static
 from django.urls import include, path, re_path
 from django.views.static import serve
 from tutorial.quickstart.views import (
+    ChangePasswordView,
     CrearClienteView,
     CustomAuthToken,
     LogoutView,
@@ -17,6 +18,7 @@ auth_urlpatterns = [
     path('api-register/', RegisterView.as_view(), name='api_register'),
     path('users/crear_cliente/', CrearClienteView.as_view(), name='crear_cliente'),
     path('me/', me, name='me'),
+    path('change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('reset-token/', ResetTokenView.as_view(), name='reset_token'),
 ]

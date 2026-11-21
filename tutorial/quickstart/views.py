@@ -298,16 +298,13 @@ class MuebleViewSet(viewsets.ModelViewSet):
         Alterna el estado de favorito del mueble para el usuario autenticado.
         """
         mueble = self.get_object()
-        favorito_qs = Favorito.objects.filter(usuario=request.user, mueble=mueble)
-
-        if favorito_qs.exists():
-            favorito_qs.delete()
-            is_favorito = False
-            msg = "Mueble eliminado de favoritos."
-        else:
-            Favorito.objects.create(usuario=request.user, mueble=mueble)
-            is_favorito = True
-            msg = "Mueble agregado a favoritos."
+        # Borrar primero y crear con get_or_create: con exists() + create(), un doble toque
+        # hacía que ambas peticiones intentaran crear y la segunda chocaba con unique_together (500).
+        borrados, _ = Favorito.objects.filter(usuario=request.user, mueble=mueble).delete()
+        is_favorito = not borrados
+        if is_favorito:
+            Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
+        msg = "Mueble agregado a favoritos." if is_favorito else "Mueble eliminado de favoritos."
 
         total_favoritos = mueble.favoritos.count()
         return Response({

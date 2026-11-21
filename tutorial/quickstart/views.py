@@ -9,7 +9,7 @@ from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from .filters import ApartadoFilter, MuebleFilter
@@ -26,6 +26,7 @@ from .serializers import (
     RegisterSerializer,
     UserProfileSerializer,
     UserSerializer,
+    validar_password,
 )
 
 
@@ -163,8 +164,10 @@ class ChangePasswordView(APIView):
         new_password = request.data.get('new_password') or ''
         if not user.check_password(request.data.get('current_password') or ''):
             return Response({'detail': 'La contraseña actual es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
-        if len(new_password) < 6:
-            return Response({'detail': 'La nueva contraseña debe tener al menos 6 caracteres.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validar_password(new_password, user)
+        except ValidationError as e:
+            return Response({'detail': ' '.join(e.detail['password'])}, status=status.HTTP_400_BAD_REQUEST)
         user.set_password(new_password)
         user.save(update_fields=['password'])
         Token.objects.filter(user=user).delete()

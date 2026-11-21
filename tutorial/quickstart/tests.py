@@ -119,6 +119,20 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(res_upper.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('email', res_upper.data)
 
+    def test_change_password(self):
+        res = self.client.post('/change-password/', {'current_password': 'mala', 'new_password': 'nueva123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': '123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': 'nueva123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(res.data['token'], self.token.key)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('nueva123'))
+        # El token viejo ya no sirve
+        self.assertEqual(self.client.get('/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+
     def test_user_me_patch_empty_email(self):
         # Correo vacío -> 400
         for empty_val in ['', '   ']:

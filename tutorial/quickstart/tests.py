@@ -62,14 +62,25 @@ class NordikaBackendTests(APITestCase):
         response = self.client.post('/api-register/', {
             'username': 'nuevousuario',
             'email': 'nuevo@nordika.com',
-            'password': 'password123',
-            'password_confirm': 'password123',
+            'password': 'Mueble$Azul47',
+            'password_confirm': 'Mueble$Azul47',
             'first_name': 'Nuevo',
             'last_name': 'Cliente'
         })
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('token', response.data)
         self.assertTrue(User.objects.filter(username='nuevousuario').exists())
+
+    def test_register_rechaza_password_debil(self):
+        self.client.credentials()
+        # Común, solo números, parecida al usuario y muy corta
+        for password in ['password123', '12345678', 'debilusuario', 'Ab1!']:
+            res = self.client.post('/api-register/', {
+                'username': 'debilusuario', 'email': 'debil@nordika.com', 'password': password,
+            })
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, password)
+            self.assertIn('password', res.data)
+        self.assertFalse(User.objects.filter(username='debilusuario').exists())
 
     def test_user_me_profile(self):
         response = self.client.get('/me/')
@@ -107,7 +118,7 @@ class NordikaBackendTests(APITestCase):
         User.objects.create_user(
             username='otro_usuario',
             email='otro@nordika.com',
-            password='password123'
+            password='Mueble$Azul47'
         )
         # Intento de usar el mismo correo de otro usuario
         res = self.client.patch('/me/', {'email': 'otro@nordika.com'}, format='json')
@@ -122,8 +133,10 @@ class NordikaBackendTests(APITestCase):
     def test_change_password(self):
         res = self.client.post('/change-password/', {'current_password': 'mala', 'new_password': 'nueva123'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': '123'}, format='json')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        for debil in ['123', 'password123', '98765432']:
+            res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': debil}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, debil)
+            self.assertTrue(res.data['detail'])
 
         res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': 'nueva123'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -594,8 +607,8 @@ class NordikaBackendTests(APITestCase):
         payload = {
             'username': 'cliente_nuevo',
             'email': 'nuevo_cliente@nordika.com',
-            'password': 'password123',
-            'password_confirm': 'password123',
+            'password': 'Mueble$Azul47',
+            'password_confirm': 'Mueble$Azul47',
             'first_name': 'Cliente',
             'last_name': 'Prueba'
         }
@@ -609,13 +622,13 @@ class NordikaBackendTests(APITestCase):
 
         nuevo = User.objects.get(username='cliente_nuevo')
         self.assertFalse(nuevo.is_staff)
-        self.assertTrue(nuevo.check_password('password123'))
+        self.assertTrue(nuevo.check_password('Mueble$Azul47'))
 
     def test_crear_cliente_no_admin_recibe_403(self):
         payload = {
             'username': 'cliente_no_auth',
             'email': 'noauth@nordika.com',
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
         }
         res = self.client.post('/users/crear_cliente/', payload, format='json')
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
@@ -626,7 +639,7 @@ class NordikaBackendTests(APITestCase):
         res1 = self.client.post('/users/crear_cliente/', {
             'username': 'user1',
             'email': 'u1@nordika.com',
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
             'password_confirm': 'diferente',
         }, format='json')
         self.assertEqual(res1.status_code, status.HTTP_400_BAD_REQUEST)
@@ -635,7 +648,7 @@ class NordikaBackendTests(APITestCase):
         res2 = self.client.post('/users/crear_cliente/', {
             'username': 'user2',
             'email': self.user.email,
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
         }, format='json')
         self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -644,7 +657,7 @@ class NordikaBackendTests(APITestCase):
         res_api = self.client.post('/api/users/crear_cliente/', {
             'username': 'cliente_api_prefix',
             'email': 'api_prefix@nordika.com',
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
         }, format='json')
         self.assertEqual(res_api.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.filter(username='cliente_api_prefix').exists())

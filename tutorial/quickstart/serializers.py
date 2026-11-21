@@ -272,6 +272,7 @@ class ApartadoSerializer(serializers.ModelSerializer):
     usuario_username = serializers.CharField(source='usuario.username', read_only=True)
     usuario_email = serializers.CharField(source='usuario.email', read_only=True)
     usuario_nombre = serializers.SerializerMethodField(read_only=True)
+    usuario_activo = serializers.BooleanField(source='usuario.is_active', read_only=True)
     codigo = serializers.ReadOnlyField()
     expira_en = serializers.DateTimeField(read_only=True)
     venta = VentaSerializer(read_only=True)
@@ -280,7 +281,7 @@ class ApartadoSerializer(serializers.ModelSerializer):
         model = Apartado
         fields = [
             'id', 'codigo', 'usuario', 'usuario_username', 'usuario_email', 'usuario_nombre',
-            'mueble', 'mueble_id', 'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
+            'usuario_activo', 'mueble', 'mueble_id', 'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
         ]
         read_only_fields = ['id', 'usuario', 'estado', 'creado_en', 'actualizado_en']
 

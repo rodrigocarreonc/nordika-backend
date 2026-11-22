@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 from django.contrib.auth.models import User
+from django.db.models import QuerySet
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -62,14 +64,25 @@ class NordikaBackendTests(APITestCase):
         response = self.client.post('/api-register/', {
             'username': 'nuevousuario',
             'email': 'nuevo@nordika.com',
-            'password': 'password123',
-            'password_confirm': 'password123',
+            'password': 'Mueble$Azul47',
+            'password_confirm': 'Mueble$Azul47',
             'first_name': 'Nuevo',
             'last_name': 'Cliente'
         })
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('token', response.data)
         self.assertTrue(User.objects.filter(username='nuevousuario').exists())
+
+    def test_register_rechaza_password_debil(self):
+        self.client.credentials()
+        # Común, solo números, parecida al usuario y muy corta
+        for password in ['password123', '12345678', 'debilusuario', 'Ab1!']:
+            res = self.client.post('/api-register/', {
+                'username': 'debilusuario', 'email': 'debil@nordika.com', 'password': password,
+            })
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, password)
+            self.assertIn('password', res.data)
+        self.assertFalse(User.objects.filter(username='debilusuario').exists())
 
     def test_user_me_profile(self):
         response = self.client.get('/me/')
@@ -107,7 +120,7 @@ class NordikaBackendTests(APITestCase):
         User.objects.create_user(
             username='otro_usuario',
             email='otro@nordika.com',
-            password='password123'
+            password='Mueble$Azul47'
         )
         # Intento de usar el mismo correo de otro usuario
         res = self.client.patch('/me/', {'email': 'otro@nordika.com'}, format='json')
@@ -118,6 +131,54 @@ class NordikaBackendTests(APITestCase):
         res_upper = self.client.patch('/me/', {'email': 'OTRO@NORDIKA.COM'}, format='json')
         self.assertEqual(res_upper.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('email', res_upper.data)
+
+    def test_change_password(self):
+        res = self.client.post('/change-password/', {'current_password': 'mala', 'new_password': 'nueva123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        for debil in ['123', 'password123', '98765432']:
+            res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': debil}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, debil)
+            self.assertTrue(res.data['detail'])
+
+        res = self.client.post('/change-password/', {'current_password': 'testpassword123', 'new_password': 'nueva123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(res.data['token'], self.token.key)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('nueva123'))
+        # El token viejo ya no sirve
+        self.assertEqual(self.client.get('/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_delete_account(self):
+        apartado = Apartado.objects.create(usuario=self.user, mueble=self.mueble, cantidad=3)
+        Mueble.objects.filter(pk=self.mueble.pk).update(stock=7)
+
+        res = self.client.delete('/me/', {'password': 'mala'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(User.objects.get(pk=self.user.pk).is_active)
+
+        res = self.client.delete('/me/', {'password': 'testpassword123'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+        self.assertFalse(Token.objects.filter(user=self.user).exists())
+        apartado.refresh_from_db()
+        self.assertEqual(apartado.estado, Apartado.CANCELADO)
+        # El staff ve el apartado marcado como de una cuenta eliminada
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=User.objects.create_user(username='admin_del', password='x', is_staff=True)).key)
+        res = self.client.get(f'/apartados/{apartado.pk}/')
+        self.assertFalse(res.data['usuario_activo'])
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+
+        self.client.credentials()
+        res = self.client.post('/api-token-auth/', {'username': 'testuser', 'password': 'testpassword123'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # El username y el email quedan libres para una cuenta nueva
+        res = self.client.post('/api-register/', {
+            'username': 'testuser', 'email': 'test@nordika.com', 'password': 'otra123',
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
 
     def test_user_me_patch_empty_email(self):
         # Correo vacío -> 400
@@ -250,6 +311,27 @@ class NordikaBackendTests(APITestCase):
         self.assertEqual(toggle_res2.status_code, status.HTTP_200_OK)
         self.assertFalse(toggle_res2.data['is_favorito'])
 
+    def test_toggle_favorito_doble_toque_no_da_500(self):
+        # Simula un doble toque: la otra petición crea el favorito justo después de que esta
+        # revisó si existía (exists() o delete()) y no encontró nada.
+        ya_creo = []
+
+        def otra_peticion_crea_despues_de(metodo_original):
+            def envoltura(qs):
+                resultado = metodo_original(qs)
+                if qs.model is Favorito and not ya_creo:
+                    ya_creo.append(True)
+                    Favorito.objects.create(usuario=self.user, mueble=self.mueble)
+                return resultado
+            return envoltura
+
+        with patch.object(QuerySet, 'exists', otra_peticion_crea_despues_de(QuerySet.exists)), \
+                patch.object(QuerySet, 'delete', otra_peticion_crea_despues_de(QuerySet.delete)):
+            res = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['is_favorito'])
+        self.assertEqual(Favorito.objects.filter(usuario=self.user, mueble=self.mueble).count(), 1)
+
     def test_get_requires_token(self):
         self.client.credentials()
         for url in ['/muebles/', '/muebles/destacados/', '/categorias/', '/proveedores/']:
@@ -353,6 +435,21 @@ class NordikaBackendTests(APITestCase):
         # Ya no se puede aceptar
         self._admin_client()
         self.assertEqual(self.client.post(f'/apartados/{apartado_id}/aceptar/').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
+
+    def test_cerrar_apartado_dos_veces_no_devuelve_stock_doble(self):
+        # Simula dos peticiones que leyeron el mismo pendiente antes de que alguna lo cerrara
+        apartado_id = self._apartar(3).data['id']
+        lectura_1 = Apartado.objects.get(pk=apartado_id)
+        lectura_2 = Apartado.objects.get(pk=apartado_id)
+
+        self.assertTrue(lectura_1.cerrar(Apartado.CANCELADO))
+        self.assertFalse(lectura_2.cerrar(Apartado.RECHAZADO))
+        self.assertFalse(lectura_2.cerrar(Apartado.ACEPTADO))
+
+        self.mueble.refresh_from_db()
+        self.assertEqual(self.mueble.stock, 10)
+        self.assertEqual(Apartado.objects.get(pk=apartado_id).estado, Apartado.CANCELADO)
         self.assertFalse(Venta.objects.filter(apartado_id=apartado_id).exists())
 
     def test_muebles_libera_stock_vencido(self):
@@ -533,8 +630,8 @@ class NordikaBackendTests(APITestCase):
         payload = {
             'username': 'cliente_nuevo',
             'email': 'nuevo_cliente@nordika.com',
-            'password': 'password123',
-            'password_confirm': 'password123',
+            'password': 'Mueble$Azul47',
+            'password_confirm': 'Mueble$Azul47',
             'first_name': 'Cliente',
             'last_name': 'Prueba'
         }
@@ -548,13 +645,13 @@ class NordikaBackendTests(APITestCase):
 
         nuevo = User.objects.get(username='cliente_nuevo')
         self.assertFalse(nuevo.is_staff)
-        self.assertTrue(nuevo.check_password('password123'))
+        self.assertTrue(nuevo.check_password('Mueble$Azul47'))
 
     def test_crear_cliente_no_admin_recibe_403(self):
         payload = {
             'username': 'cliente_no_auth',
             'email': 'noauth@nordika.com',
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
         }
         res = self.client.post('/users/crear_cliente/', payload, format='json')
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
@@ -565,7 +662,7 @@ class NordikaBackendTests(APITestCase):
         res1 = self.client.post('/users/crear_cliente/', {
             'username': 'user1',
             'email': 'u1@nordika.com',
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
             'password_confirm': 'diferente',
         }, format='json')
         self.assertEqual(res1.status_code, status.HTTP_400_BAD_REQUEST)
@@ -574,7 +671,7 @@ class NordikaBackendTests(APITestCase):
         res2 = self.client.post('/users/crear_cliente/', {
             'username': 'user2',
             'email': self.user.email,
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
         }, format='json')
         self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -583,7 +680,7 @@ class NordikaBackendTests(APITestCase):
         res_api = self.client.post('/api/users/crear_cliente/', {
             'username': 'cliente_api_prefix',
             'email': 'api_prefix@nordika.com',
-            'password': 'password123',
+            'password': 'Mueble$Azul47',
         }, format='json')
         self.assertEqual(res_api.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.filter(username='cliente_api_prefix').exists())

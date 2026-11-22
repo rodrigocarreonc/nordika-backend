@@ -1,10 +1,20 @@
 from decimal import Decimal
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import F
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+
+
+def validar_password(password, user):
+    """Aplica AUTH_PASSWORD_VALIDATORS (largo mínimo, comunes, solo números, parecida al usuario)."""
+    try:
+        validate_password(password, user)
+    except DjangoValidationError as e:
+        raise serializers.ValidationError({'password': list(e.messages)})
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -35,7 +45,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6, required=True)
+    password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)
     email = serializers.EmailField(required=True)
 
@@ -58,6 +68,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         password_confirm = attrs.get('password_confirm')
         if password_confirm and attrs['password'] != password_confirm:
             raise serializers.ValidationError({'password_confirm': "Las contraseñas no coinciden."})
+        # Usuario sin guardar: solo para que el validador compare la contraseña con sus datos
+        validar_password(attrs['password'], User(**{k: attrs.get(k, '') for k in ('username', 'email', 'first_name', 'last_name')}))
         return attrs
 
     def create(self, validated_data):
@@ -74,7 +86,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class ClienteCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6, required=True)
+    password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)
     email = serializers.EmailField(required=True)
     username = serializers.CharField(required=True)
@@ -112,6 +124,8 @@ class ClienteCreateSerializer(serializers.ModelSerializer):
         password_confirm = attrs.get('password_confirm')
         if password_confirm and attrs.get('password') != password_confirm:
             raise serializers.ValidationError({'password_confirm': "Las contraseñas no coinciden."})
+        # Usuario sin guardar: solo para que el validador compare la contraseña con sus datos
+        validar_password(attrs['password'], User(**{k: attrs.get(k, '') for k in ('username', 'email', 'first_name', 'last_name')}))
         return attrs
 
     def create(self, validated_data):
@@ -272,6 +286,7 @@ class ApartadoSerializer(serializers.ModelSerializer):
     usuario_username = serializers.CharField(source='usuario.username', read_only=True)
     usuario_email = serializers.CharField(source='usuario.email', read_only=True)
     usuario_nombre = serializers.SerializerMethodField(read_only=True)
+    usuario_activo = serializers.BooleanField(source='usuario.is_active', read_only=True)
     codigo = serializers.ReadOnlyField()
     expira_en = serializers.DateTimeField(read_only=True)
     venta = VentaSerializer(read_only=True)
@@ -280,7 +295,7 @@ class ApartadoSerializer(serializers.ModelSerializer):
         model = Apartado
         fields = [
             'id', 'codigo', 'usuario', 'usuario_username', 'usuario_email', 'usuario_nombre',
-            'mueble', 'mueble_id', 'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
+            'usuario_activo', 'mueble', 'mueble_id', 'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
         ]
         read_only_fields = ['id', 'usuario', 'estado', 'creado_en', 'actualizado_en']
 

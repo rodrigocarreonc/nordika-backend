@@ -1,16 +1,18 @@
+import uuid
+
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import F, ProtectedError
+from django.db.models import ProtectedError
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import APIView, ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from .filters import ApartadoFilter, MuebleFilter
-from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+from .models import Apartado, Categoria, Favorito, Mueble, Proveedor
 from .pagination import ConfigurablePageNumberPagination
 from .permissions import IsAdminOrReadOnly
 from .serializers import (
@@ -23,6 +25,7 @@ from .serializers import (
     RegisterSerializer,
     UserProfileSerializer,
     UserSerializer,
+    validar_password,
 )
 
 
@@ -99,16 +102,33 @@ class CrearClienteView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['GET', 'PATCH'])
+@api_view(['GET', 'PATCH', 'DELETE'])
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
     """
-    Obtiene o actualiza el perfil del usuario autenticado.
+    Obtiene, actualiza o elimina (desactiva) el perfil del usuario autenticado.
     """
     user = request.user
     if request.method == 'GET':
         serializer = UserProfileSerializer(user)
         return Response(serializer.data)
+
+    if request.method == 'DELETE':
+        # 400 y no 401: la app cierra sesión ante cualquier 401
+        if not user.check_password(request.data.get('password') or ''):
+            return Response({'detail': 'La contraseña es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Se desactiva en vez de borrar: Venta.apartado es PROTECT y el historial de ventas debe conservarse
+        with transaction.atomic():
+            # Libera username y email para que puedan volver a registrarse; uuid evita choques con usernames reales
+            user.username = f'eliminado_{uuid.uuid4().hex}'
+            user.email = ''
+            user.is_active = False
+            user.save(update_fields=['username', 'email', 'is_active'])
+            Token.objects.filter(user=user).delete()
+        # Después de desactivar: si algo falla aquí, los pendientes igual vencen solos a los 5 días
+        for apartado in Apartado.objects.filter(usuario=user, estado=Apartado.PENDIENTE):
+            apartado.cerrar(Apartado.CANCELADO)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     serializer = UserProfileSerializer(user, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
@@ -129,6 +149,28 @@ class LogoutView(APIView):
         except Exception:
             pass
         return Response({'detail': 'Sesión cerrada exitosamente.'}, status=status.HTTP_200_OK)
+
+
+class ChangePasswordView(APIView):
+    """
+    Cambia la contraseña del usuario y regenera su token (cierra las demás sesiones).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        new_password = request.data.get('new_password') or ''
+        if not user.check_password(request.data.get('current_password') or ''):
+            return Response({'detail': 'La contraseña actual es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validar_password(new_password, user)
+        except ValidationError as e:
+            return Response({'detail': ' '.join(e.detail['password'])}, status=status.HTTP_400_BAD_REQUEST)
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+        Token.objects.filter(user=user).delete()
+        token = Token.objects.create(user=user)
+        return Response({'token': token.key, 'detail': 'Contraseña actualizada.'}, status=status.HTTP_200_OK)
 
 
 class ResetTokenView(APIView):
@@ -256,16 +298,13 @@ class MuebleViewSet(viewsets.ModelViewSet):
         Alterna el estado de favorito del mueble para el usuario autenticado.
         """
         mueble = self.get_object()
-        favorito_qs = Favorito.objects.filter(usuario=request.user, mueble=mueble)
-
-        if favorito_qs.exists():
-            favorito_qs.delete()
-            is_favorito = False
-            msg = "Mueble eliminado de favoritos."
-        else:
-            Favorito.objects.create(usuario=request.user, mueble=mueble)
-            is_favorito = True
-            msg = "Mueble agregado a favoritos."
+        # Borrar primero y crear con get_or_create: con exists() + create(), un doble toque
+        # hacía que ambas peticiones intentaran crear y la segunda chocaba con unique_together (500).
+        borrados, _ = Favorito.objects.filter(usuario=request.user, mueble=mueble).delete()
+        is_favorito = not borrados
+        if is_favorito:
+            Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
+        msg = "Mueble agregado a favoritos." if is_favorito else "Mueble eliminado de favoritos."
 
         total_favoritos = mueble.favoritos.count()
         return Response({
@@ -356,22 +395,15 @@ class ApartadoViewSet(mixins.CreateModelMixin,
         serializer.save()
 
     def _resolver(self, pk, nuevo_estado):
-        with transaction.atomic():
-            apartado = Apartado.objects.select_for_update().filter(pk=pk).first()
-            if apartado is None:
-                return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
-            if apartado.estado != Apartado.PENDIENTE:
-                return Response(
-                    {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            if nuevo_estado == Apartado.ACEPTADO:
-                precio = apartado.mueble.precio
-                Venta.objects.create(apartado=apartado, precio_unitario=precio, total=precio * apartado.cantidad)
-            else:
-                Mueble.objects.filter(pk=apartado.mueble_id).update(stock=F('stock') + apartado.cantidad)
-            apartado.estado = nuevo_estado
-            apartado.save(update_fields=['estado', 'actualizado_en'])
+        apartado = Apartado.objects.filter(pk=pk).first()
+        if apartado is None:
+            return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        if not apartado.cerrar(nuevo_estado):
+            apartado.refresh_from_db(fields=['estado'])
+            return Response(
+                {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         apartado = self.get_queryset().get(pk=apartado.pk)
         return Response(self.get_serializer(apartado).data, status=status.HTTP_200_OK)
 

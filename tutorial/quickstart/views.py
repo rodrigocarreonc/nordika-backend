@@ -1,8 +1,13 @@
+"""Vistas y ViewSets REST de Nordika: autenticación, catálogo, favoritos, apartados y SSE."""
+
+import queue
 import uuid
 
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import ProtectedError
+from django.http import JsonResponse, StreamingHttpResponse
+from django.views.decorators.http import require_GET
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
@@ -11,10 +16,12 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from . import realtime
 from .filters import ApartadoFilter, MuebleFilter
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor
 from .pagination import ConfigurablePageNumberPagination
 from .permissions import IsAdminOrReadOnly
+from .realtime import broker, format_sse_event, publish_event
 from .serializers import (
     ApartadoSerializer,
     CategoriaSerializer,
@@ -34,9 +41,7 @@ from .serializers import (
 # ==========================================
 
 class CustomAuthToken(ObtainAuthToken):
-    """
-    Inicia sesión con username y password, devolviendo el token y datos del usuario.
-    """
+    """Inicia sesión y devuelve el token junto con el perfil para evitar una segunda llamada a /me/."""
     def post(self, request, *args, **kwargs):
         serializer = self.serializer_class(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -54,9 +59,7 @@ class CustomAuthToken(ObtainAuthToken):
 
 
 class RegisterView(APIView):
-    """
-    Registra un nuevo usuario y devuelve el token de sesión inmediatamente.
-    """
+    """Autoregistro público (AllowAny) que crea al cliente y devuelve su token de sesión al instante."""
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -78,10 +81,7 @@ class RegisterView(APIView):
 
 
 class CrearClienteView(APIView):
-    """
-    Endpoint para que los administradores registren nuevos clientes (is_staff=False).
-    Requiere IsAdminUser.
-    """
+    """Permite al staff dar de alta clientes desde el panel admin sin otorgar permisos de staff."""
     permission_classes = [permissions.IsAdminUser]
 
     def post(self, request):
@@ -105,9 +105,7 @@ class CrearClienteView(APIView):
 @api_view(['GET', 'PATCH', 'DELETE'])
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
-    """
-    Obtiene, actualiza o elimina (desactiva) el perfil del usuario autenticado.
-    """
+    """Consulta, edita parcialmente o desactiva la cuenta del usuario autenticado."""
     user = request.user
     if request.method == 'GET':
         serializer = UserProfileSerializer(user)
@@ -137,9 +135,7 @@ def me(request):
 
 
 class LogoutView(APIView):
-    """
-    Cierra la sesión del usuario actual eliminando su token.
-    """
+    """Revoca el token del usuario en servidor para invalidar la sesión inmediatamente."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -152,9 +148,7 @@ class LogoutView(APIView):
 
 
 class ChangePasswordView(APIView):
-    """
-    Cambia la contraseña del usuario y regenera su token (cierra las demás sesiones).
-    """
+    """Actualiza la contraseña y rota el token para invalidar sesiones previas en otros dispositivos."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -174,9 +168,7 @@ class ChangePasswordView(APIView):
 
 
 class ResetTokenView(APIView):
-    """
-    Regenera el token de autenticación del usuario.
-    """
+    """Rota el token de acceso sin cerrar sesión al cliente actual, invalidando tokens viejos."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -193,6 +185,7 @@ class ResetTokenView(APIView):
 # ==========================================
 
 class ProveedorViewSet(viewsets.ModelViewSet):
+    """CRUD de proveedores (solo escritura staff); captura ProtectedError y responde 409 legible."""
     queryset = Proveedor.objects.all().order_by('nombre')
     serializer_class = ProveedorSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
@@ -214,6 +207,7 @@ class ProveedorViewSet(viewsets.ModelViewSet):
 
 
 class CategoriaViewSet(viewsets.ModelViewSet):
+    """CRUD de categorías sin paginación para poblar selects y chips de filtro de una sola vez."""
     queryset = Categoria.objects.all().order_by('nombre')
     serializer_class = CategoriaSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
@@ -228,13 +222,9 @@ class CategoriaViewSet(viewsets.ModelViewSet):
 # ==========================================
 
 class MuebleViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet para Muebles:
-    - Búsqueda por nombre, descripción, categoría y proveedor.
-    - Filtros por categoría, proveedor, rango de precio (precio_min, precio_max) y en_stock.
-    - Ordenamiento por precio, stock, nombre, creado_en.
-    - Paginación configurable.
-    - Custom actions: toggle_favorito, mis_favoritos, destacados.
+    """Catálogo de muebles con filtros, paginación y acciones de favoritos/destacados.
+
+    Usa select_related para traer categoría y proveedor en una sola consulta SQL.
     """
     queryset = Mueble.objects.select_related('categoria', 'proveedor').all()
     serializer_class = MuebleSerializer
@@ -278,10 +268,13 @@ class MuebleViewSet(viewsets.ModelViewSet):
             )
         try:
             with transaction.atomic():
-                instance.apartados.filter(
+                apartados_eliminados, _ = instance.apartados.filter(
                     estado__in=[Apartado.RECHAZADO, Apartado.CANCELADO],
                     venta__isnull=True,
                 ).delete()
+                if apartados_eliminados:
+                    # Asegura el aviso de borrado masivo de apartados cerrados tras confirmar el commit.
+                    publish_event('apartado', 'deleted', None)
                 instance.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ProtectedError as e:
@@ -294,16 +287,19 @@ class MuebleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def toggle_favorito(self, request, pk=None):
-        """
-        Alterna el estado de favorito del mueble para el usuario autenticado.
-        """
+        """Alterna el estado de favorito del mueble para el usuario autenticado."""
         mueble = self.get_object()
         # Borrar primero y crear con get_or_create: con exists() + create(), un doble toque
         # hacía que ambas peticiones intentaran crear y la segunda chocaba con unique_together (500).
         borrados, _ = Favorito.objects.filter(usuario=request.user, mueble=mueble).delete()
         is_favorito = not borrados
         if is_favorito:
-            Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
+            favorito, creado = Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
+            if not creado:
+                # Si hubo carrera por doble toque, emitimos igual el favorito para sincronizar clientes.
+                publish_event('favorito', 'created', favorito.pk)
+        # Notificamos el mueble porque cambian sus campos derivados (is_favorito y favoritos_count).
+        publish_event('mueble', 'updated', mueble.pk)
         msg = "Mueble agregado a favoritos." if is_favorito else "Mueble eliminado de favoritos."
 
         total_favoritos = mueble.favoritos.count()
@@ -316,9 +312,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def mis_favoritos(self, request):
-        """
-        Devuelve la lista paginada de muebles que el usuario actual ha marcado como favoritos.
-        """
+        """Devuelve la lista paginada de muebles que el usuario actual ha marcado como favoritos."""
         muebles = Mueble.objects.filter(favoritos__usuario=request.user).select_related('categoria', 'proveedor')
         page = self.paginate_queryset(muebles)
         if page is not None:
@@ -330,9 +324,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def destacados(self, request):
-        """
-        Devuelve los muebles destacados (los primeros 6 con stock disponible).
-        """
+        """Devuelve los 6 muebles con stock más recientes para la sección destacada del inicio."""
         destacados = Mueble.objects.filter(stock__gt=0).select_related('categoria', 'proveedor').order_by('-actualizado_en')[:6]
         serializer = self.get_serializer(destacados, many=True)
         return Response(serializer.data)
@@ -343,6 +335,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
 # ==========================================
 
 class FavoritoViewSet(viewsets.ModelViewSet):
+    """Gestion directa de favoritos: el staff ve todos y cada cliente solo los suyos."""
     serializer_class = FavoritoSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
@@ -362,12 +355,11 @@ class ApartadoViewSet(mixins.CreateModelMixin,
                       mixins.ListModelMixin,
                       mixins.RetrieveModelMixin,
                       viewsets.GenericViewSet):
-    """
-    Apartados de muebles:
-    - El usuario crea un apartado (se descuenta el stock) y ve solo los suyos.
-    - El administrador ve todos y puede aceptarlos (se registra la venta)
-      o rechazarlos (se devuelve la cantidad al stock).
-    - Un apartado pendiente vence a los 5 días: se cancela y su cantidad vuelve al stock.
+    """Ciclo de vida de apartados sin PUT/PATCH/DELETE directos para no alterar stock sin control.
+
+    - El cliente crea un apartado (descuenta stock) y consulta solo los propios.
+    - El staff consulta todos y los resuelve vía /aceptar/ (crea Venta) o /rechazar/ (repone stock).
+    - Los pendientes vencen a los 5 días y devuelven su stock automáticamente.
     """
     serializer_class = ApartadoSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -380,7 +372,7 @@ class ApartadoViewSet(mixins.CreateModelMixin,
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        # shortcut: los vencidos se cancelan al consultar la API, no a la hora exacta; si se necesita puntualidad, mover a una tarea programada.
+        # Evaluación perezosa de vencimientos al entrar a la API; evita requerir un cron externo.
         Apartado.cancelar_vencidos()
 
     def get_queryset(self):
@@ -390,10 +382,12 @@ class ApartadoViewSet(mixins.CreateModelMixin,
         return qs.filter(usuario=self.request.user)
 
     def perform_create(self, serializer):
+        # El inventario de apartados esta reservado a clientes; el staff solo administra y resuelve.
         if self.request.user.is_staff:
             raise PermissionDenied('El administrador no puede apartar muebles.')
         serializer.save()
 
+    # Centraliza la transición atómica de aceptar/rechazar y evita doble resolución concurrente.
     def _resolver(self, pk, nuevo_estado):
         apartado = Apartado.objects.filter(pk=pk).first()
         if apartado is None:
@@ -414,3 +408,74 @@ class ApartadoViewSet(mixins.CreateModelMixin,
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def rechazar(self, request, pk=None):
         return self._resolver(pk, Apartado.RECHAZADO)
+
+
+# ==========================================
+# 6. TIEMPO REAL (SERVER-SENT EVENTS)
+# ==========================================
+
+def _authenticate_sse_token(request):
+    """Valida el token DRF desde Authorization o ?token= para soportar EventSource en web.
+
+    EventSource en navegadores no permite cabeceras personalizadas, así que se acepta
+    el token por query string únicamente cuando no viene cabecera Authorization.
+    """
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '').strip()
+    token_key = None
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == 'token':
+            token_key = parts[1]
+    else:
+        token_key = (request.GET.get('token') or '').strip()
+
+    if not token_key:
+        return None
+
+    token = (
+        Token.objects.select_related('user')
+        .filter(key=token_key, user__is_active=True)
+        .first()
+    )
+    return token.user if token else None
+
+
+@require_GET
+def events_stream(request):
+    """Entrega un flujo SSE en vivo con cambios de catálogo, apartados y favoritos.
+
+    Se define como vista estándar de Django (sin @api_view de DRF) para que la negociación
+    de contenido de DRF nunca rechace `Accept: text/event-stream` con 406.
+    """
+    user = _authenticate_sse_token(request)
+    if user is None:
+        return JsonResponse(
+            {'detail': 'Credenciales de autenticación inválidas o ausentes.'},
+            status=401,
+        )
+
+    # Permite cerrar el flujo justo tras el handshake en pruebas o chequeos rápidos (?once=1).
+    once = request.GET.get('once', '').lower() in ('1', 'true', 'yes')
+
+    def event_generator():
+        # Suscribe al broker antes del handshake para no perder eventos durante el arranque del flujo.
+        with broker.subscribe() as subscriber_queue:
+            yield format_sse_event('connected', {'status': 'ok'})
+            if once:
+                return
+            while True:
+                try:
+                    event = subscriber_queue.get(timeout=realtime.SSE_KEEPALIVE_SECONDS)
+                    yield format_sse_event('update', event)
+                except queue.Empty:
+                    # Comentario SSE periódico para mantener viva la conexión sin alterar el estado del cliente.
+                    yield ': keepalive\n\n'
+
+    response = StreamingHttpResponse(
+        event_generator(),
+        content_type='text/event-stream; charset=utf-8',
+    )
+    # Evita caché y buffering en proxies; no se fija `Connection` porque WSGI prohíbe cabeceras hop-by-hop.
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response

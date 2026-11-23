@@ -1,3 +1,5 @@
+"""Serializers de DRF para validación, formato de respuesta y operaciones atómicas de escritura."""
+
 from decimal import Decimal
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
@@ -7,10 +9,11 @@ from django.db.models import F
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+from .realtime import publish_event
 
 
 def validar_password(password, user):
-    """Aplica AUTH_PASSWORD_VALIDATORS (largo mínimo, comunes, solo números, parecida al usuario)."""
+    """Aplica AUTH_PASSWORD_VALIDATORS y convierte los errores de Django al formato de DRF."""
     try:
         validate_password(password, user)
     except DjangoValidationError as e:
@@ -18,6 +21,7 @@ def validar_password(password, user):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    """Representación básica de usuario con campos administrativos protegidos como solo lectura."""
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'is_staff', 'first_name', 'last_name', 'date_joined']
@@ -25,6 +29,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    """Edición del perfil propio (`/me/`): impide cambiar username o privilegios y exige correo único."""
     email = serializers.EmailField(required=False, allow_blank=False)
 
     class Meta:
@@ -32,6 +37,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'date_joined']
         read_only_fields = ['id', 'username', 'is_staff', 'date_joined']
 
+    # Normaliza el correo a minusculas y excluye al propio usuario para permitir guardar sin cambios.
     def validate_email(self, value):
         if not value or not value.strip():
             raise serializers.ValidationError('El correo electrónico no puede estar vacío.')
@@ -45,6 +51,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
+    """Autoregistro público de clientes: válida unicidad, fortaleza de contraseña y crea el token."""
     password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)
     email = serializers.EmailField(required=True)
@@ -86,6 +93,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class ClienteCreateSerializer(serializers.ModelSerializer):
+    """Alta de clientes desde el panel admin: sanitiza texto y fuerza is_staff=False para evitar escalación."""
     password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)
     email = serializers.EmailField(required=True)
@@ -144,6 +152,7 @@ class ClienteCreateSerializer(serializers.ModelSerializer):
 
 
 class CategoriaSerializer(serializers.ModelSerializer):
+    """Incluye el conteo de muebles para mostrarlo en el panel admin y filtros."""
     muebles_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -155,6 +164,7 @@ class CategoriaSerializer(serializers.ModelSerializer):
 
 
 class ProveedorSerializer(serializers.ModelSerializer):
+    """Incluye muebles_count para advertir al admin cuando un proveedor tiene articulos ligados."""
     muebles_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -165,6 +175,7 @@ class ProveedorSerializer(serializers.ModelSerializer):
         return obj.muebles.count()
 
 
+# Serializers reducidos para embeber categoría y proveedor dentro de Mueble sin consultas extra.
 class MuebleNestedCategoriaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Categoria
@@ -178,6 +189,10 @@ class MuebleNestedProveedorSerializer(serializers.ModelSerializer):
 
 
 class MuebleSerializer(serializers.ModelSerializer):
+    """Devuelve categoría/proveedor anidados al leer, pero acepta categoria_id/proveedor_id al escribir.
+
+    Esta separación simplifica los formularios multipart de la app sin perder datos listos para UI.
+    """
     categoria = MuebleNestedCategoriaSerializer(read_only=True)
     proveedor = MuebleNestedProveedorSerializer(read_only=True)
 
@@ -245,6 +260,7 @@ class MuebleSerializer(serializers.ModelSerializer):
 
 
 class FavoritoSerializer(serializers.ModelSerializer):
+    """Asocia siempre el favorito al usuario autenticado y evita duplicados por mueble."""
     mueble = MuebleSerializer(read_only=True)
     mueble_id = serializers.PrimaryKeyRelatedField(
         queryset=Mueble.objects.all(),
@@ -271,12 +287,14 @@ class FavoritoSerializer(serializers.ModelSerializer):
 
 
 class VentaSerializer(serializers.ModelSerializer):
+    """Resumen embebido de la venta cuando un apartado ya fue aceptado."""
     class Meta:
         model = Venta
         fields = ['id', 'precio_unitario', 'total', 'fecha_venta']
 
 
 class ApartadoSerializer(serializers.ModelSerializer):
+    """Expone datos de contacto del cliente para el staff y descuenta stock de forma atómica al crear."""
     mueble = MuebleSerializer(read_only=True)
     mueble_id = serializers.PrimaryKeyRelatedField(
         queryset=Mueble.objects.all(),
@@ -323,6 +341,8 @@ class ApartadoSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'cantidad': f"Stock insuficiente. El stock actual es de {mueble.stock} unidades."
                 })
+            # El UPDATE atómico del stock omite post_save; programamos el aviso SSE tras el commit.
+            publish_event('mueble', 'updated', mueble.pk)
             validated_data['usuario'] = self.context['request'].user
             apartado = super().create(validated_data)
         apartado.mueble.refresh_from_db()

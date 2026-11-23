@@ -1,3 +1,5 @@
+"""Enrutamiento raíz del backend: combina autenticación, recursos REST y media."""
+
 from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
@@ -10,9 +12,11 @@ from tutorial.quickstart.views import (
     LogoutView,
     RegisterView,
     ResetTokenView,
+    events_stream,
     me,
 )
 
+# Endpoints de sesión y cuenta agrupados para montarlos tanto en raíz como bajo /api/.
 auth_urlpatterns = [
     path('api-token-auth/', CustomAuthToken.as_view(), name='api_token_auth'),
     path('api-register/', RegisterView.as_view(), name='api_register'),
@@ -23,19 +27,22 @@ auth_urlpatterns = [
     path('reset-token/', ResetTokenView.as_view(), name='reset_token'),
 ]
 
+# Se exponen las rutas en raíz y bajo /api/ para mantener compatibilidad con
+# clientes anteriores y convenciones REST con prefijo.
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
-    # Auth endpoints at root
+    # Flujo SSE en tiempo real disponible tanto en raíz como bajo /api/.
+    path('events/', events_stream, name='events_stream'),
+    path('api/events/', events_stream, name='api_events_stream'),
     *auth_urlpatterns,
-    # Router endpoints at root
     path('', include('tutorial.quickstart.urls')),
-    # Also available under /api/ prefix for standard REST convention
     path('api/', include('tutorial.quickstart.urls')),
     path('api/', include(auth_urlpatterns)),
 ]
 
-# Media files serving (works in development and Azure Web App)
+# Sirve imágenes subidas incluso con DEBUG=False en Azure App Service, donde no hay
+# un servidor de archivos media dedicado (como S3 o Nginx) delante de Django.
 urlpatterns += [
     re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
 ]

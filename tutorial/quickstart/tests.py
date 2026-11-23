@@ -1,7 +1,11 @@
+"""Suite de pruebas de integración de la API REST (auth, catálogo, apartados, concurrencia y permisos)."""
+
 from datetime import datetime, timedelta
 from decimal import Decimal
+import json
 from unittest.mock import patch
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.db.models import QuerySet
 from django.test import TestCase
 from django.urls import reverse
@@ -10,10 +14,13 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
+from . import realtime
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+from .realtime import RealtimeBroker, broker
 
 
 class NordikaBackendTests(APITestCase):
+    """Valida reglas de negocio, seguridad por rol y casos borde críticos sobre los endpoints REST."""
     def setUp(self):
         # Crear usuarios
         self.user = User.objects.create_user(
@@ -684,4 +691,252 @@ class NordikaBackendTests(APITestCase):
         }, format='json')
         self.assertEqual(res_api.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.filter(username='cliente_api_prefix').exists())
+
+
+class RealtimeSSETests(APITestCase):
+    """Pruebas del endpoint SSE (/events/ y /api/events/), autenticación, CORS y emisión de eventos."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='sse_client',
+            email='sse_client@nordika.com',
+            password='Mueble$Azul47',
+        )
+        self.token = Token.objects.create(user=self.user)
+
+        self.admin = User.objects.create_user(
+            username='sse_admin',
+            email='sse_admin@nordika.com',
+            password='Mueble$Azul47',
+            is_staff=True,
+        )
+        self.admin_token = Token.objects.create(user=self.admin)
+
+        self.proveedor = Proveedor.objects.create(nombre='Taller SSE')
+        self.categoria = Categoria.objects.create(nombre='Salas SSE')
+        self.mueble = Mueble.objects.create(
+            nombre='Sillón SSE',
+            descripcion='Sillón de prueba para SSE',
+            precio=Decimal('4500.00'),
+            stock=5,
+            categoria=self.categoria,
+            proveedor=self.proveedor,
+        )
+
+    @staticmethod
+    def _parse_sse_chunk(raw_chunk):
+        """Convierte un bloque SSE en tupla (evento, dict JSON) para aserciones claras."""
+        text = raw_chunk.decode('utf-8') if isinstance(raw_chunk, bytes) else raw_chunk
+        event_name = None
+        data_line = None
+        for line in text.strip().splitlines():
+            if line.startswith('event:'):
+                event_name = line.split(':', 1)[1].strip()
+            elif line.startswith('data:'):
+                data_line = line.split(':', 1)[1].strip()
+        return event_name, json.loads(data_line) if data_line else None
+
+    def test_sse_requiere_token_y_rechaza_invalido_o_inactivo(self):
+        # Sin credenciales -> 401 JSON en ambas rutas.
+        for path in ('/events/', '/api/events/'):
+            res = self.client.get(path)
+            self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+            self.assertEqual(res['Content-Type'], 'application/json')
+
+        # Token inexistente por query param o cabecera -> 401.
+        self.assertEqual(self.client.get('/events/?token=invalido123').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(
+            self.client.get('/events/', HTTP_AUTHORIZATION='Token invalido123').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+        # Usuario desactivado -> 401 aunque su token exista en base de datos.
+        inactivo = User.objects.create_user(username='inactivo_sse', password='x', is_active=False)
+        token_inactivo = Token.objects.create(user=inactivo)
+        self.assertEqual(
+            self.client.get(f'/events/?token={token_inactivo.key}').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertEqual(
+            self.client.get('/events/', HTTP_AUTHORIZATION=f'Token {token_inactivo.key}').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_sse_handshake_query_token_y_cabecera_y_cors(self):
+        # Autenticación por ?token= con Accept: text/event-stream y Origin de Expo Web.
+        res = self.client.get(
+            f'/events/?token={self.token.key}&once=1',
+            HTTP_ACCEPT='text/event-stream',
+            HTTP_ORIGIN='http://localhost:8081',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.streaming)
+        self.assertEqual(res['Content-Type'], 'text/event-stream; charset=utf-8')
+        self.assertEqual(res['Cache-Control'], 'no-cache')
+        self.assertEqual(res['X-Accel-Buffering'], 'no')
+        # WSGI prohíbe cabeceras hop-by-hop como Connection.
+        self.assertNotIn('Connection', res)
+        self.assertEqual(res['Access-Control-Allow-Origin'], 'http://localhost:8081')
+
+        chunks = list(res.streaming_content)
+        self.assertEqual(len(chunks), 1)
+        event_name, payload = self._parse_sse_chunk(chunks[0])
+        self.assertEqual(event_name, 'connected')
+        self.assertEqual(payload, {'status': 'ok'})
+
+        # Autenticación por cabecera Authorization en /api/events/.
+        res_api = self.client.get(
+            '/api/events/?once=1',
+            HTTP_AUTHORIZATION=f'Token {self.token.key}',
+            HTTP_ACCEPT='text/event-stream',
+        )
+        self.assertEqual(res_api.status_code, status.HTTP_200_OK)
+        chunks_api = list(res_api.streaming_content)
+        event_name, payload = self._parse_sse_chunk(chunks_api[0])
+        self.assertEqual(event_name, 'connected')
+        self.assertEqual(payload, {'status': 'ok'})
+
+    def test_sse_recibe_eventos_en_vivo_mueble_y_limpia_suscripcion(self):
+        suscriptores_iniciales = broker.subscriber_count
+        res = self.client.get(f'/events/?token={self.token.key}')
+        stream = iter(res.streaming_content)
+        try:
+            # Al consumir el handshake el generador ya quedó suscrito en el broker.
+            event_name, payload = self._parse_sse_chunk(next(stream))
+            self.assertEqual(event_name, 'connected')
+            self.assertEqual(payload, {'status': 'ok'})
+            self.assertEqual(broker.subscriber_count, suscriptores_iniciales + 1)
+
+            # Crear, actualizar y eliminar un Mueble vía ORM/API con ejecución de on_commit.
+            self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.admin_token.key}')
+            with self.captureOnCommitCallbacks(execute=True):
+                create_res = self.client.post('/muebles/', {
+                    'nombre': 'Mesa Viva',
+                    'descripcion': 'Prueba SSE',
+                    'precio': '3200.00',
+                    'stock': 3,
+                    'proveedor_id': self.proveedor.id,
+                    'categoria_id': self.categoria.id,
+                })
+            self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+            nuevo_id = create_res.data['id']
+
+            ev_name, ev_data = self._parse_sse_chunk(next(stream))
+            self.assertEqual(ev_name, 'update')
+            self.assertEqual(ev_data['resource'], 'mueble')
+            self.assertEqual(ev_data['action'], 'created')
+            self.assertEqual(ev_data['id'], nuevo_id)
+            self.assertIn('timestamp', ev_data)
+
+            with self.captureOnCommitCallbacks(execute=True):
+                patch_res = self.client.patch(f'/muebles/{nuevo_id}/', {'stock': 8})
+            self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+
+            ev_name, ev_data = self._parse_sse_chunk(next(stream))
+            self.assertEqual(ev_name, 'update')
+            self.assertEqual(ev_data['resource'], 'mueble')
+            self.assertEqual(ev_data['action'], 'updated')
+            self.assertEqual(ev_data['id'], nuevo_id)
+
+            with self.captureOnCommitCallbacks(execute=True):
+                del_res = self.client.delete(f'/muebles/{nuevo_id}/')
+            self.assertEqual(del_res.status_code, status.HTTP_204_NO_CONTENT)
+
+            ev_name, ev_data = self._parse_sse_chunk(next(stream))
+            self.assertEqual(ev_name, 'update')
+            self.assertEqual(ev_data['resource'], 'mueble')
+            self.assertEqual(ev_data['action'], 'deleted')
+            self.assertEqual(ev_data['id'], nuevo_id)
+        finally:
+            res.close()
+
+        # Al cerrar la respuesta streaming el broker debe liberar la cola del cliente.
+        self.assertEqual(broker.subscriber_count, suscriptores_iniciales)
+
+    def test_sse_emite_eventos_en_ciclo_apartado_y_favorito(self):
+        res = self.client.get(f'/events/?token={self.token.key}')
+        stream = iter(res.streaming_content)
+        try:
+            self._parse_sse_chunk(next(stream))  # Handshake connected.
+
+            # 1. Crear apartado: emite actualización de stock en mueble y creación del apartado.
+            self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+            with self.captureOnCommitCallbacks(execute=True):
+                apartado_res = self.client.post('/apartados/', {
+                    'mueble_id': self.mueble.id,
+                    'cantidad': 2,
+                })
+            self.assertEqual(apartado_res.status_code, status.HTTP_201_CREATED)
+            apartado_id = apartado_res.data['id']
+
+            eventos_creacion = [self._parse_sse_chunk(next(stream))[1] for _ in range(2)]
+            pares_creacion = {(e['resource'], e['action'], e['id']) for e in eventos_creacion}
+            self.assertIn(('mueble', 'updated', self.mueble.id), pares_creacion)
+            self.assertIn(('apartado', 'created', apartado_id), pares_creacion)
+
+            # 2. Rechazar apartado: cierra vía UPDATE y repone stock vía UPDATE (ambos deben emitir).
+            self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.admin_token.key}')
+            with self.captureOnCommitCallbacks(execute=True):
+                rechazo_res = self.client.post(f'/apartados/{apartado_id}/rechazar/')
+            self.assertEqual(rechazo_res.status_code, status.HTTP_200_OK)
+
+            eventos_rechazo = [self._parse_sse_chunk(next(stream))[1] for _ in range(2)]
+            pares_rechazo = {(e['resource'], e['action'], e['id']) for e in eventos_rechazo}
+            self.assertIn(('apartado', 'updated', apartado_id), pares_rechazo)
+            self.assertIn(('mueble', 'updated', self.mueble.id), pares_rechazo)
+
+            # 3. Alternar favorito (ON y OFF) notifica favorito y mueble.
+            self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+            with self.captureOnCommitCallbacks(execute=True):
+                fav_on = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
+            self.assertEqual(fav_on.status_code, status.HTTP_200_OK)
+
+            eventos_fav_on = [self._parse_sse_chunk(next(stream))[1] for _ in range(2)]
+            recursos_on = {(e['resource'], e['action']) for e in eventos_fav_on}
+            self.assertIn(('favorito', 'created'), recursos_on)
+            self.assertIn(('mueble', 'updated'), recursos_on)
+
+            with self.captureOnCommitCallbacks(execute=True):
+                fav_off = self.client.post(f'/muebles/{self.mueble.id}/toggle_favorito/')
+            self.assertEqual(fav_off.status_code, status.HTTP_200_OK)
+
+            eventos_fav_off = [self._parse_sse_chunk(next(stream))[1] for _ in range(2)]
+            recursos_off = {(e['resource'], e['action']) for e in eventos_fav_off}
+            self.assertIn(('favorito', 'deleted'), recursos_off)
+            self.assertIn(('mueble', 'updated'), recursos_off)
+        finally:
+            res.close()
+
+    def test_sse_keepalive_y_transaccion_revertida_y_cola_acotada(self):
+        # Keepalive cuando no llegan eventos en el intervalo configurado.
+        with patch.object(realtime, 'SSE_KEEPALIVE_SECONDS', 0.02):
+            res = self.client.get(f'/events/?token={self.token.key}')
+            stream = iter(res.streaming_content)
+            try:
+                self._parse_sse_chunk(next(stream))  # Handshake.
+                keepalive = next(stream).decode('utf-8')
+                self.assertEqual(keepalive, ': keepalive\n\n')
+            finally:
+                res.close()
+
+        # Si una transacción falla y hace rollback, no se difunden eventos fantasma.
+        with broker.subscribe() as subscriber_queue:
+            try:
+                with self.captureOnCommitCallbacks(execute=True):
+                    with transaction.atomic():
+                        Categoria.objects.create(nombre='Temporal Rollback')
+                        raise RuntimeError('Rollback intencional')
+            except RuntimeError:
+                pass
+            self.assertTrue(subscriber_queue.empty())
+
+        # Cola acotada del broker: al llenarse descarta el más viejo y conserva el más reciente.
+        local_broker = RealtimeBroker(max_queue_size=2)
+        with local_broker.subscribe() as q:
+            local_broker.publish('mueble', 'created', 1)
+            local_broker.publish('mueble', 'updated', 2)
+            local_broker.publish('mueble', 'deleted', 3)
+            recibidos = [q.get_nowait()['id'], q.get_nowait()['id']]
+            self.assertEqual(recibidos, [2, 3])
+
 

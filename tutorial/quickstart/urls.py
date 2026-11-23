@@ -1,3 +1,5 @@
+"""Registro de ViewSets en el router REST de la aplicación quickstart."""
+
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from .views import (
@@ -8,6 +10,7 @@ from .views import (
     ProveedorViewSet,
 )
 
+# DefaultRouter genera automáticamente las rutas CRUD y las acciones @action de cada recurso.
 router = DefaultRouter()
 router.register(r'muebles', MuebleViewSet, basename='mueble')
 router.register(r'categorias', CategoriaViewSet, basename='categoria')

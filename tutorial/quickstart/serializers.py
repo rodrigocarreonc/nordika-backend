@@ -251,6 +251,12 @@ class MuebleSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("El stock no puede ser negativo.")
         return value
 
+    def validate(self, attrs):
+        # Solo al crear: al editar se conserva la foto que ya tiene.
+        if self.instance is None and not attrs.get('imagen'):
+            raise serializers.ValidationError({'imagen': "La foto del mueble es obligatoria."})
+        return attrs
+
     def validate_nombre(self, value):
         val = value.strip()
         if len(val) < 2:

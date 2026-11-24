@@ -1,95 +1,95 @@
-"""Configuración del panel de Django Admin para consultar catálogo, inventario y auditoría."""
+"""Django Admin panel configuration to browse the catalog, inventory and audit data."""
 
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+from .models import Category, Favorite, Furniture, Reservation, Sale, Supplier
 
 admin.site.site_header = "Nordika Mueblería - Administración"
 admin.site.site_title = "Nordika Admin"
 admin.site.index_title = "Gestión del Catálogo e Inventario"
 
 
-class MuebleInline(admin.TabularInline):
-    """Muestra los muebles asociados dentro de la ficha de un Proveedor o Categoría."""
-    model = Mueble
+class FurnitureInline(admin.TabularInline):
+    """Shows the related furniture inside a Supplier or Category page."""
+    model = Furniture
     extra = 0
-    fields = ('nombre', 'precio', 'stock', 'creado_en')
-    readonly_fields = ('creado_en',)
+    fields = ('name', 'price', 'stock', 'created_at')
+    readonly_fields = ('created_at',)
     show_change_link = True
 
 
-@admin.register(Proveedor)
-class ProveedorAdmin(admin.ModelAdmin):
-    """Administración de proveedores con conteo y listado embebido de sus muebles."""
-    list_display = ('id', 'nombre', 'contacto', 'telefono', 'email', 'total_muebles', 'creado_en')
-    search_fields = ('nombre', 'contacto', 'email', 'telefono')
-    list_filter = ('creado_en',)
-    inlines = [MuebleInline]
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    """Supplier administration with a count and an embedded list of its furniture."""
+    list_display = ('id', 'name', 'contact_name', 'phone', 'email', 'furniture_total', 'created_at')
+    search_fields = ('name', 'contact_name', 'email', 'phone')
+    list_filter = ('created_at',)
+    inlines = [FurnitureInline]
 
-    def total_muebles(self, obj):
-        return obj.muebles.count()
-    total_muebles.short_description = 'Muebles Suministrados'
+    @admin.display(description='Muebles Suministrados')
+    def furniture_total(self, obj):
+        return obj.furniture.count()
 
 
-@admin.register(Categoria)
-class CategoriaAdmin(admin.ModelAdmin):
-    """Administración de categorías con resumen truncado de descripción y total de muebles."""
-    list_display = ('id', 'nombre', 'descripcion_corta', 'total_muebles')
-    search_fields = ('nombre', 'descripcion')
-    inlines = [MuebleInline]
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    """Category administration with a truncated description and the furniture total."""
+    list_display = ('id', 'name', 'short_description', 'furniture_total')
+    search_fields = ('name', 'description')
+    inlines = [FurnitureInline]
 
-    def descripcion_corta(self, obj):
-        if not obj.descripcion:
+    @admin.display(description='Descripción')
+    def short_description(self, obj):
+        if not obj.description:
             return "-"
-        return obj.descripcion[:50] + "..." if len(obj.descripcion) > 50 else obj.descripcion
-    descripcion_corta.short_description = 'Descripción'
+        return obj.description[:50] + "..." if len(obj.description) > 50 else obj.description
 
-    def total_muebles(self, obj):
-        return obj.muebles.count()
-    total_muebles.short_description = 'Cantidad de Muebles'
+    @admin.display(description='Cantidad de Muebles')
+    def furniture_total(self, obj):
+        return obj.furniture.count()
 
 
-@admin.register(Mueble)
-class MuebleAdmin(admin.ModelAdmin):
-    """Vista de inventario con miniaturas, precio MXN y semáforo de stock por color."""
+@admin.register(Furniture)
+class FurnitureAdmin(admin.ModelAdmin):
+    """Inventory view with thumbnails, MXN price and a color-coded stock indicator."""
     list_display = (
         'id',
-        'imagen_preview',
-        'nombre',
-        'categoria',
-        'proveedor',
-        'precio_formateado',
+        'image_preview',
+        'name',
+        'category',
+        'supplier',
+        'formatted_price',
         'stock_badge',
-        'total_favoritos',
-        'creado_en'
+        'favorites_total',
+        'created_at'
     )
-    list_filter = ('categoria', 'proveedor', 'creado_en')
-    search_fields = ('nombre', 'descripcion', 'categoria__nombre', 'proveedor__nombre')
+    list_filter = ('category', 'supplier', 'created_at')
+    search_fields = ('name', 'description', 'category__name', 'supplier__name')
     list_editable = ()
-    readonly_fields = ('imagen_preview_grande', 'creado_en', 'actualizado_en')
+    readonly_fields = ('large_image_preview', 'created_at', 'updated_at')
 
     fieldsets = (
         ('Información General', {
-            'fields': ('nombre', 'descripcion', 'categoria', 'proveedor')
+            'fields': ('name', 'description', 'category', 'supplier')
         }),
         ('Inventario y Precios', {
-            'fields': ('precio', 'stock')
+            'fields': ('price', 'stock')
         }),
         ('Multimedia', {
-            'fields': ('imagen', 'imagen_preview_grande')
+            'fields': ('image', 'large_image_preview')
         }),
         ('Auditoría', {
-            'fields': ('creado_en', 'actualizado_en'),
+            'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
 
-    def precio_formateado(self, obj):
-        return f"${obj.precio:,.2f}"
-    precio_formateado.short_description = 'Precio (MXN)'
-    precio_formateado.admin_order_field = 'precio'
+    @admin.display(description='Precio (MXN)', ordering='price')
+    def formatted_price(self, obj):
+        return f"${obj.price:,.2f}"
 
-    # Semáforo visual: rojo agotado (0), ámbar bajo stock (<=3), verde disponible.
+    # Traffic light: red sold out (0), amber low stock (<=3), green available.
+    @admin.display(description='Stock', ordering='stock')
     def stock_badge(self, obj):
         if obj.stock == 0:
             color = "#dc2626"
@@ -104,41 +104,43 @@ class MuebleAdmin(admin.ModelAdmin):
             '<span style="background-color: {}; color: white; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;">{}</span>',
             color, text
         )
-    stock_badge.short_description = 'Stock'
-    stock_badge.admin_order_field = 'stock'
 
-    def total_favoritos(self, obj):
-        return obj.favoritos.count()
-    total_favoritos.short_description = 'Favoritos'
+    @admin.display(description='Favoritos')
+    def favorites_total(self, obj):
+        return obj.favorites.count()
 
-    def imagen_preview(self, obj):
-        if obj.imagen:
-            return format_html('<img src="{}" style="width: 45px; height: 45px; object-fit: cover; border-radius: 6px;" />', obj.imagen.url)
+    @admin.display(description='Vista previa')
+    def image_preview(self, obj):
+        if obj.image:
+            return format_html('<img src="{}" style="width: 45px; height: 45px; object-fit: cover; border-radius: 6px;" />', obj.image.url)
         return format_html('<span style="color: #9ca3af; font-size: 11px;">Sin imagen</span>')
-    imagen_preview.short_description = 'Vista previa'
 
-    def imagen_preview_grande(self, obj):
-        if obj.imagen:
-            return format_html('<img src="{}" style="max-width: 250px; max-height: 250px; border-radius: 8px; object-fit: cover;" />', obj.imagen.url)
+    @admin.display(description='Imagen actual')
+    def large_image_preview(self, obj):
+        if obj.image:
+            return format_html('<img src="{}" style="max-width: 250px; max-height: 250px; border-radius: 8px; object-fit: cover;" />', obj.image.url)
         return "No hay imagen cargada"
-    imagen_preview_grande.short_description = 'Imagen actual'
 
 
-@admin.register(Favorito)
-class FavoritoAdmin(admin.ModelAdmin):
-    """Consulta de favoritos guardados por los clientes."""
-    list_display = ('id', 'usuario', 'mueble', 'fecha_agregado')
-    list_filter = ('fecha_agregado',)
-    search_fields = ('usuario__username', 'usuario__email', 'mueble__nombre')
-    readonly_fields = ('fecha_agregado',)
+@admin.register(Favorite)
+class FavoriteAdmin(admin.ModelAdmin):
+    """Browse favorites saved by customers."""
+    list_display = ('id', 'user', 'furniture', 'added_at')
+    list_filter = ('added_at',)
+    search_fields = ('user__username', 'user__email', 'furniture__name')
+    readonly_fields = ('added_at',)
 
 
-@admin.register(Apartado)
-class ApartadoAdmin(admin.ModelAdmin):
-    """Solo lectura: crear/aceptar/rechazar pasa por la API para mantener stock y ventas sincronizados."""
-    list_display = ('codigo', 'usuario', 'mueble', 'cantidad', 'estado', 'creado_en')
-    list_filter = ('estado', 'creado_en')
-    search_fields = ('usuario__username', 'mueble__nombre')
+@admin.register(Reservation)
+class ReservationAdmin(admin.ModelAdmin):
+    """Read-only: create/accept/reject go through the API to keep stock and sales in sync."""
+    list_display = ('code_display', 'user', 'furniture', 'quantity', 'status', 'created_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('user__username', 'furniture__name')
+
+    @admin.display(description='Código')
+    def code_display(self, obj):
+        return obj.code
 
     def has_add_permission(self, request):
         return False
@@ -147,12 +149,12 @@ class ApartadoAdmin(admin.ModelAdmin):
         return False
 
 
-@admin.register(Venta)
-class VentaAdmin(admin.ModelAdmin):
-    """Solo lectura: las ventas nacen únicamente al aceptar un apartado desde la API."""
-    list_display = ('id', 'apartado', 'precio_unitario', 'total', 'fecha_venta')
-    list_filter = ('fecha_venta',)
-    search_fields = ('apartado__usuario__username', 'apartado__mueble__nombre')
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    """Read-only: sales are only created when a reservation is accepted through the API."""
+    list_display = ('id', 'reservation', 'unit_price', 'total', 'sold_at')
+    list_filter = ('sold_at',)
+    search_fields = ('reservation__user__username', 'reservation__furniture__name')
 
     def has_add_permission(self, request):
         return False

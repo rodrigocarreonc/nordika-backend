@@ -1,8 +1,8 @@
-"""Configuración de registro de la aplicación quickstart dentro de Django."""
+"""Registration config of the quickstart app inside Django."""
 
 from django.apps import AppConfig
 
 
 class QuickstartConfig(AppConfig):
-    # Ruta completa del paquete porque quickstart vive anidada dentro de tutorial/.
+    # Full package path because quickstart is nested inside tutorial/.
     name = 'tutorial.quickstart'

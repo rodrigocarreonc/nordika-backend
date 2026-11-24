@@ -1,4 +1,4 @@
-"""Vistas y ViewSets REST de Nordika: autenticación, catálogo, favoritos y ciclo de apartados."""
+"""Nordika REST views and ViewSets: authentication, catalog, favorites and reservation lifecycle."""
 
 import uuid
 
@@ -13,30 +13,30 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from .filters import ApartadoFilter, MuebleFilter
-from .models import Apartado, Categoria, Favorito, Mueble, Proveedor
+from .filters import FurnitureFilter, ReservationFilter
+from .models import Category, Favorite, Furniture, Reservation, Supplier
 from .pagination import ConfigurablePageNumberPagination
 from .permissions import IsAdminOrReadOnly
 from .serializers import (
-    ApartadoSerializer,
-    CategoriaSerializer,
-    ClienteCreateSerializer,
-    FavoritoSerializer,
-    MuebleSerializer,
-    ProveedorSerializer,
+    CategorySerializer,
+    CustomerCreateSerializer,
+    FavoriteSerializer,
+    FurnitureSerializer,
     RegisterSerializer,
+    ReservationSerializer,
+    SupplierSerializer,
     UserProfileSerializer,
     UserSerializer,
-    validar_password,
+    validate_password_rules,
 )
 
 
 # ==========================================
-# 1. AUTENTICACIÓN Y USUARIOS
+# 1. AUTHENTICATION AND USERS
 # ==========================================
 
 class CustomAuthToken(ObtainAuthToken):
-    """Inicia sesión y devuelve el token junto con el perfil para evitar una segunda llamada a /me/."""
+    """Logs in and returns the token along with the profile to avoid a second call to /me/."""
     def post(self, request, *args, **kwargs):
         serializer = self.serializer_class(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -54,7 +54,7 @@ class CustomAuthToken(ObtainAuthToken):
 
 
 class RegisterView(APIView):
-    """Autoregistro público (AllowAny) que crea al cliente y devuelve su token de sesión al instante."""
+    """Public sign-up (AllowAny) that creates the customer and returns their session token right away."""
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -75,12 +75,12 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class CrearClienteView(APIView):
-    """Permite al staff dar de alta clientes desde el panel admin sin otorgar permisos de staff."""
+class CreateCustomerView(APIView):
+    """Lets staff create customers from the admin panel without granting staff permissions."""
     permission_classes = [permissions.IsAdminUser]
 
     def post(self, request):
-        serializer = ClienteCreateSerializer(data=request.data)
+        serializer = CustomerCreateSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
             return Response({
@@ -100,27 +100,27 @@ class CrearClienteView(APIView):
 @api_view(['GET', 'PATCH', 'DELETE'])
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
-    """Consulta, edita parcialmente o desactiva la cuenta del usuario autenticado."""
+    """Reads, partially edits or deactivates the authenticated user's account."""
     user = request.user
     if request.method == 'GET':
         serializer = UserProfileSerializer(user)
         return Response(serializer.data)
 
     if request.method == 'DELETE':
-        # 400 y no 401: la app cierra sesión ante cualquier 401
+        # 400 and not 401: the app logs out on any 401
         if not user.check_password(request.data.get('password') or ''):
             return Response({'detail': 'La contraseña es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
-        # Se desactiva en vez de borrar: Venta.apartado es PROTECT y el historial de ventas debe conservarse
+        # Deactivate instead of delete: Sale.reservation is PROTECT and the sales history must be kept
         with transaction.atomic():
-            # Libera username y email para que puedan volver a registrarse; uuid evita choques con usernames reales
-            user.username = f'eliminado_{uuid.uuid4().hex}'
+            # Frees username and email so they can sign up again; uuid avoids clashes with real usernames
+            user.username = f'deleted_{uuid.uuid4().hex}'
             user.email = ''
             user.is_active = False
             user.save(update_fields=['username', 'email', 'is_active'])
             Token.objects.filter(user=user).delete()
-        # Después de desactivar: si algo falla aquí, los pendientes igual vencen solos a los 5 días
-        for apartado in Apartado.objects.filter(usuario=user, estado=Apartado.PENDIENTE):
-            apartado.cerrar(Apartado.CANCELADO)
+        # After deactivating: if something fails here, pending reservations still expire on their own after 5 days
+        for reservation in Reservation.objects.filter(user=user, status=Reservation.PENDING):
+            reservation.close(Reservation.CANCELLED)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     serializer = UserProfileSerializer(user, data=request.data, partial=True)
@@ -130,7 +130,7 @@ def me(request):
 
 
 class LogoutView(APIView):
-    """Revoca el token del usuario en servidor para invalidar la sesión inmediatamente."""
+    """Revokes the user's token on the server to invalidate the session immediately."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -143,7 +143,7 @@ class LogoutView(APIView):
 
 
 class ChangePasswordView(APIView):
-    """Actualiza la contraseña y rota el token para invalidar sesiones previas en otros dispositivos."""
+    """Updates the password and rotates the token to invalidate previous sessions on other devices."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -152,7 +152,7 @@ class ChangePasswordView(APIView):
         if not user.check_password(request.data.get('current_password') or ''):
             return Response({'detail': 'La contraseña actual es incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            validar_password(new_password, user)
+            validate_password_rules(new_password, user)
         except ValidationError as e:
             return Response({'detail': ' '.join(e.detail['password'])}, status=status.HTTP_400_BAD_REQUEST)
         user.set_password(new_password)
@@ -163,7 +163,7 @@ class ChangePasswordView(APIView):
 
 
 class ResetTokenView(APIView):
-    """Rota el token de acceso sin cerrar sesión al cliente actual, invalidando tokens viejos."""
+    """Rotates the access token without logging out the current client, invalidating old tokens."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -176,18 +176,18 @@ class ResetTokenView(APIView):
 
 
 # ==========================================
-# 2. PROVEEDORES Y CATEGORÍAS
+# 2. SUPPLIERS AND CATEGORIES
 # ==========================================
 
-class ProveedorViewSet(viewsets.ModelViewSet):
-    """CRUD de proveedores (solo escritura staff); captura ProtectedError y responde 409 legible."""
-    queryset = Proveedor.objects.all().order_by('nombre')
-    serializer_class = ProveedorSerializer
+class SupplierViewSet(viewsets.ModelViewSet):
+    """Supplier CRUD (staff-only writes); catches ProtectedError and answers a readable 409."""
+    queryset = Supplier.objects.all().order_by('name')
+    serializer_class = SupplierSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
-    pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
+    pagination_class = None  # small catalog: the app uses it whole in filters and forms
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['nombre', 'contacto', 'email', 'telefono']
-    ordering_fields = ['nombre', 'creado_en']
+    search_fields = ['name', 'contact_name', 'email', 'phone']
+    ordering_fields = ['name', 'created_at']
 
     def destroy(self, request, *args, **kwargs):
         try:
@@ -201,59 +201,59 @@ class ProveedorViewSet(viewsets.ModelViewSet):
             )
 
 
-class CategoriaViewSet(viewsets.ModelViewSet):
-    """CRUD de categorías sin paginación para poblar selects y chips de filtro de una sola vez."""
-    queryset = Categoria.objects.all().order_by('nombre')
-    serializer_class = CategoriaSerializer
+class CategoryViewSet(viewsets.ModelViewSet):
+    """Category CRUD without pagination to fill selects and filter chips in one go."""
+    queryset = Category.objects.all().order_by('name')
+    serializer_class = CategorySerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
-    pagination_class = None  # catálogo chico: la app lo usa completo en filtros y formularios
+    pagination_class = None  # small catalog: the app uses it whole in filters and forms
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['nombre', 'descripcion']
-    ordering_fields = ['nombre']
+    search_fields = ['name', 'description']
+    ordering_fields = ['name']
 
 
 # ==========================================
-# 3. MUEBLES (CATÁLOGO, CRUD Y CUSTOM ACTIONS)
+# 3. FURNITURE (CATALOG, CRUD AND CUSTOM ACTIONS)
 # ==========================================
 
-class MuebleViewSet(viewsets.ModelViewSet):
-    """Catálogo de muebles con filtros, paginación y acciones de favoritos/destacados.
+class FurnitureViewSet(viewsets.ModelViewSet):
+    """Furniture catalog with filters, pagination and favorite/featured actions.
 
-    Usa select_related para traer categoría y proveedor en una sola consulta SQL.
+    Uses select_related to fetch category and supplier in a single SQL query.
     """
-    queryset = Mueble.objects.select_related('categoria', 'proveedor').all()
-    serializer_class = MuebleSerializer
+    queryset = Furniture.objects.select_related('category', 'supplier').all()
+    serializer_class = FurnitureSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_class = MuebleFilter
-    search_fields = ['nombre', 'descripcion', 'categoria__nombre', 'proveedor__nombre']
-    ordering_fields = ['precio', 'stock', 'creado_en', 'nombre']
-    ordering = ['-creado_en']
+    filterset_class = FurnitureFilter
+    search_fields = ['name', 'description', 'category__name', 'supplier__name']
+    ordering_fields = ['price', 'stock', 'created_at', 'name']
+    ordering = ['-created_at']
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        # Libera el stock de apartados vencidos antes de mostrarlo.
-        Apartado.cancelar_vencidos()
+        # Releases the stock of expired reservations before showing it.
+        Reservation.cancel_expired()
 
     def destroy(self, request, *args, **kwargs):
         """
-        Elimina un mueble respetando la protección de apartados activos o vendidos.
+        Deletes a furniture item while respecting the protection of active or sold reservations.
 
-        - Apartado.mueble mantiene on_delete=models.PROTECT para que ningún apartado
-          quede con mueble=null en respuestas de la API (p. ej. apartados.tsx).
-        - Si existen apartados PENDIENTE, ACEPTADO o con Venta asociada, responde
-          409 Conflict y bloquea la eliminación.
-        - Si solo existen apartados RECHAZADO o CANCELADO sin venta, los elimina
-          en la misma transacción atómica antes de borrar el mueble (204 No Content),
-          por lo que esos registros dejan de mostrarse en el historial.
+        - Reservation.furniture keeps on_delete=models.PROTECT so no reservation ends up
+          with furniture=null in API responses (e.g. reservations.tsx).
+        - If there are PENDING or ACCEPTED reservations, or ones with a Sale, it answers
+          409 Conflict and blocks the deletion.
+        - If there are only REJECTED or CANCELLED reservations without a sale, it deletes them
+          in the same atomic transaction before deleting the furniture (204 No Content),
+          so those records stop showing in the history.
         """
         instance = self.get_object()
-        # Solo bloquean eliminación los apartados pendientes o aceptados/vendidos.
-        # Apartados ya rechazados o cancelados sin venta permiten eliminar el mueble.
-        blocking_count = instance.apartados.exclude(
-            estado__in=[Apartado.RECHAZADO, Apartado.CANCELADO],
-            venta__isnull=True,
+        # Only pending or accepted/sold reservations block the deletion.
+        # Rejected or cancelled reservations without a sale allow deleting the furniture.
+        blocking_count = instance.reservations.exclude(
+            status__in=[Reservation.REJECTED, Reservation.CANCELLED],
+            sale__isnull=True,
         ).count()
         if blocking_count > 0:
             plural = "apartados asociados" if blocking_count != 1 else "apartado asociado"
@@ -263,9 +263,9 @@ class MuebleViewSet(viewsets.ModelViewSet):
             )
         try:
             with transaction.atomic():
-                instance.apartados.filter(
-                    estado__in=[Apartado.RECHAZADO, Apartado.CANCELADO],
-                    venta__isnull=True,
+                instance.reservations.filter(
+                    status__in=[Reservation.REJECTED, Reservation.CANCELLED],
+                    sale__isnull=True,
                 ).delete()
                 instance.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
@@ -278,120 +278,119 @@ class MuebleViewSet(viewsets.ModelViewSet):
             )
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
-    def toggle_favorito(self, request, pk=None):
-        """Alterna el estado de favorito del mueble para el usuario autenticado."""
-        mueble = self.get_object()
-        # Borrar primero y crear con get_or_create: con exists() + create(), un doble toque
-        # hacía que ambas peticiones intentaran crear y la segunda chocaba con unique_together (500).
-        borrados, _ = Favorito.objects.filter(usuario=request.user, mueble=mueble).delete()
-        is_favorito = not borrados
-        if is_favorito:
-            Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
-        msg = "Mueble agregado a favoritos." if is_favorito else "Mueble eliminado de favoritos."
+    def toggle_favorite(self, request, pk=None):
+        """Toggles the favorite state of the furniture for the authenticated user."""
+        furniture = self.get_object()
+        # Delete first and create with get_or_create: with exists() + create(), a double tap
+        # made both requests try to create and the second one hit unique_together (500).
+        deleted, _ = Favorite.objects.filter(user=request.user, furniture=furniture).delete()
+        is_favorite = not deleted
+        if is_favorite:
+            Favorite.objects.get_or_create(user=request.user, furniture=furniture)
+        msg = "Mueble agregado a favoritos." if is_favorite else "Mueble eliminado de favoritos."
 
-        total_favoritos = mueble.favoritos.count()
         return Response({
-            'mueble_id': mueble.id,
-            'is_favorito': is_favorito,
-            'total_favoritos': total_favoritos,
+            'furniture_id': furniture.id,
+            'is_favorite': is_favorite,
+            'favorites_count': furniture.favorites.count(),
             'detail': msg
         }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
-    def mis_favoritos(self, request):
-        """Devuelve la lista paginada de muebles que el usuario actual ha marcado como favoritos."""
-        muebles = Mueble.objects.filter(favoritos__usuario=request.user).select_related('categoria', 'proveedor')
-        page = self.paginate_queryset(muebles)
+    def my_favorites(self, request):
+        """Returns the paginated list of furniture the current user has marked as favorite."""
+        furniture = Furniture.objects.filter(favorites__user=request.user).select_related('category', 'supplier')
+        page = self.paginate_queryset(furniture)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
 
-        serializer = self.get_serializer(muebles, many=True)
+        serializer = self.get_serializer(furniture, many=True)
         return Response(serializer.data)
 
     @action(detail=False, methods=['get'])
-    def destacados(self, request):
-        """Devuelve los 6 muebles con stock más recientes para la sección destacada del inicio."""
-        destacados = Mueble.objects.filter(stock__gt=0).select_related('categoria', 'proveedor').order_by('-actualizado_en')[:6]
-        serializer = self.get_serializer(destacados, many=True)
+    def featured(self, request):
+        """Returns the 6 most recently updated in-stock items for the home featured section."""
+        featured = Furniture.objects.filter(stock__gt=0).select_related('category', 'supplier').order_by('-updated_at')[:6]
+        serializer = self.get_serializer(featured, many=True)
         return Response(serializer.data)
 
 
 # ==========================================
-# 4. FAVORITOS
+# 4. FAVORITES
 # ==========================================
 
-class FavoritoViewSet(viewsets.ModelViewSet):
-    """Gestion directa de favoritos: el staff ve todos y cada cliente solo los suyos."""
-    serializer_class = FavoritoSerializer
+class FavoriteViewSet(viewsets.ModelViewSet):
+    """Direct favorites management: staff sees all of them and each customer only their own."""
+    serializer_class = FavoriteSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
         if user.is_staff:
-            return Favorito.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor').all()
-        return Favorito.objects.filter(usuario=user).select_related('mueble', 'mueble__categoria', 'mueble__proveedor')
+            return Favorite.objects.select_related('furniture', 'user', 'furniture__category', 'furniture__supplier').all()
+        return Favorite.objects.filter(user=user).select_related('furniture', 'furniture__category', 'furniture__supplier')
 
 
 # ==========================================
-# 5. APARTADOS
+# 5. RESERVATIONS
 # ==========================================
 
-class ApartadoViewSet(mixins.CreateModelMixin,
-                      mixins.ListModelMixin,
-                      mixins.RetrieveModelMixin,
-                      viewsets.GenericViewSet):
-    """Ciclo de vida de apartados sin PUT/PATCH/DELETE directos para no alterar stock sin control.
+class ReservationViewSet(mixins.CreateModelMixin,
+                         mixins.ListModelMixin,
+                         mixins.RetrieveModelMixin,
+                         viewsets.GenericViewSet):
+    """Reservation lifecycle without direct PUT/PATCH/DELETE so stock is never changed uncontrolled.
 
-    - El cliente crea un apartado (descuenta stock) y consulta solo los propios.
-    - El staff consulta todos y los resuelve vía /aceptar/ (crea Venta) o /rechazar/ (repone stock).
-    - Los pendientes vencen a los 5 días y devuelven su stock automáticamente.
+    - The customer creates a reservation (deducts stock) and only sees their own.
+    - Staff sees all of them and resolves them via /accept/ (creates a Sale) or /reject/ (restocks).
+    - Pending ones expire after 5 days and return their stock automatically.
     """
-    serializer_class = ApartadoSerializer
+    serializer_class = ReservationSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = ConfigurablePageNumberPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_class = ApartadoFilter
-    search_fields = ['mueble__nombre', 'usuario__username']
-    ordering_fields = ['creado_en', 'cantidad']
-    ordering = ['-creado_en']
+    filterset_class = ReservationFilter
+    search_fields = ['furniture__name', 'user__username']
+    ordering_fields = ['created_at', 'quantity']
+    ordering = ['-created_at']
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        # Evaluación perezosa de vencimientos al entrar a la API; evita requerir un cron externo.
-        Apartado.cancelar_vencidos()
+        # Lazy expiration check on API entry; avoids needing an external cron.
+        Reservation.cancel_expired()
 
     def get_queryset(self):
-        qs = Apartado.objects.select_related('mueble', 'usuario', 'mueble__categoria', 'mueble__proveedor', 'venta')
+        qs = Reservation.objects.select_related('furniture', 'user', 'furniture__category', 'furniture__supplier', 'sale')
         if self.request.user.is_staff:
             return qs
-        return qs.filter(usuario=self.request.user)
+        return qs.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        # El inventario de apartados esta reservado a clientes; el staff solo administra y resuelve.
+        # Reservations are for customers only; staff just manages and resolves them.
         if self.request.user.is_staff:
             raise PermissionDenied('El administrador no puede apartar muebles.')
         serializer.save()
 
-    # Centraliza la transición atómica de aceptar/rechazar y evita doble resolución concurrente.
-    def _resolver(self, pk, nuevo_estado):
-        apartado = Apartado.objects.filter(pk=pk).first()
-        if apartado is None:
+    # Centralizes the atomic accept/reject transition and prevents concurrent double resolution.
+    def _resolve(self, pk, new_status):
+        reservation = Reservation.objects.filter(pk=pk).first()
+        if reservation is None:
             return Response({'detail': 'Apartado no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
-        if not apartado.cerrar(nuevo_estado):
-            apartado.refresh_from_db(fields=['estado'])
+        if not reservation.close(new_status):
+            reservation.refresh_from_db(fields=['status'])
             return Response(
-                {'detail': f'El apartado ya fue {apartado.estado.lower()}.'},
+                {'detail': f'El apartado ya fue {reservation.get_status_display().lower()}.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        apartado = self.get_queryset().get(pk=apartado.pk)
-        return Response(self.get_serializer(apartado).data, status=status.HTTP_200_OK)
+        reservation = self.get_queryset().get(pk=reservation.pk)
+        return Response(self.get_serializer(reservation).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
-    def aceptar(self, request, pk=None):
-        return self._resolver(pk, Apartado.ACEPTADO)
+    def accept(self, request, pk=None):
+        return self._resolve(pk, Reservation.ACCEPTED)
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
-    def rechazar(self, request, pk=None):
-        return self._resolver(pk, Apartado.RECHAZADO)
+    def reject(self, request, pk=None):
+        return self._resolve(pk, Reservation.REJECTED)

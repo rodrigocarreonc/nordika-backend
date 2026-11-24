@@ -1,2 +1,2 @@
-"""Aplicación Django con el dominio, API REST y pruebas de Nordika."""
+"""Django app with the Nordika domain, REST API and tests."""
 

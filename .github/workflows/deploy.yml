@@ -9,7 +9,7 @@ on:
 
 jobs:
   # ==========================================
-  # 1. PRUEBAS Y ANÁLISIS ESTÁTICO
+  # 1. TESTS AND STATIC ANALYSIS
   # ==========================================
   static-analysis:
     runs-on: ubuntu-latest
@@ -30,12 +30,12 @@ jobs:
           pip install black flake8
 
       - name: Run Django Tests
-        # Usamos el test runner nativo de Django en lugar de pytest por defecto
+        # Uses Django's built-in test runner instead of pytest
         run: |
           python manage.py test 
 
   # ==========================================
-  # 2. CONSTRUCCIÓN DEL ARTEFACTO (Producción)
+  # 2. BUILD THE ARTIFACT (Production)
   # ==========================================
   build:
     runs-on: ubuntu-latest
@@ -56,12 +56,12 @@ jobs:
             !.venv/
             !.git/
             !__pycache__/
-            !db.sqlite3       # CRÍTICO: Evita sobrescribir los datos de producción
-            !staticfiles/     # Azure generará estos archivos en el servidor
-            !media/           # Evita subir archivos multimedia locales
+            !db.sqlite3       # CRITICAL: avoids overwriting production data
+            !staticfiles/     # Azure generates these files on the server
+            !media/           # Avoids uploading local media files
 
   # ==========================================
-  # 3. DESPLIEGUE EN AZURE
+  # 3. DEPLOY TO AZURE
   # ==========================================
   deploy:
     runs-on: ubuntu-latest
@@ -77,7 +77,7 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'topicos' # REEMPLAZA ESTO
+          app-name: 'topicos' # REPLACE THIS
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .

@@ -1,3 +1,5 @@
+"""Modelos de dominio del catálogo, favoritos, apartados e historial de ventas."""
+
 from datetime import timedelta
 from decimal import Decimal
 from django.db import models, transaction
@@ -8,6 +10,7 @@ from django.core.validators import MinValueValidator
 
 
 class Proveedor(models.Model):
+    """Fabricante o distribuidor de muebles; su nombre es único para evitar duplicados en catálogo."""
     nombre = models.CharField(max_length=150, unique=True)
     contacto = models.CharField(max_length=100, blank=True, null=True)
     telefono = models.CharField(max_length=20, blank=True, null=True)
@@ -24,6 +27,7 @@ class Proveedor(models.Model):
 
 
 class Categoria(models.Model):
+    """Agrupación lógica del catálogo (Salas, Comedores, etc.) usada en filtros de la app."""
     nombre = models.CharField(max_length=100, unique=True)
     descripcion = models.TextField(blank=True, null=True)
 
@@ -37,6 +41,7 @@ class Categoria(models.Model):
 
 
 class Mueble(models.Model):
+    """Articulo principal del inventario con precio positivo, existencias y relaciones al catálogo."""
     nombre = models.CharField(max_length=150)
     descripcion = models.TextField(blank=True, default='')
     precio = models.DecimalField(
@@ -50,6 +55,7 @@ class Mueble(models.Model):
     )
     imagen = models.ImageField(upload_to='muebles/', null=True, blank=True)
 
+    # SET_NULL permite borrar una categoría sin perder sus muebles; quedan "Sin categoría".
     categoria = models.ForeignKey(
         Categoria,
         related_name='muebles',
@@ -57,6 +63,7 @@ class Mueble(models.Model):
         null=True,
         blank=True
     )
+    # PROTECT impide borrar un proveedor que aún tiene muebles asignados (la API devuelve 409).
     proveedor = models.ForeignKey(
         Proveedor,
         related_name='muebles',
@@ -77,6 +84,7 @@ class Mueble(models.Model):
 
 
 class Favorito(models.Model):
+    """Relación única usuario-mueble; CASCADE limpia automáticamente favoritos de cuentas o muebles borrados."""
     usuario = models.ForeignKey(
         User,
         related_name='favoritos',
@@ -100,6 +108,7 @@ class Favorito(models.Model):
 
 
 class Apartado(models.Model):
+    """Reserva temporal de stock hecha por un cliente; vence a los 5 días si el staff no la resuelve."""
     PENDIENTE = 'PENDIENTE'
     ACEPTADO = 'ACEPTADO'
     RECHAZADO = 'RECHAZADO'
@@ -117,6 +126,7 @@ class Apartado(models.Model):
         related_name='apartados',
         on_delete=models.CASCADE
     )
+    # PROTECT evita apartados huérfanos (mueble=null) en el historial y en las respuestas de la API.
     mueble = models.ForeignKey(
         Mueble,
         related_name='apartados',
@@ -173,6 +183,8 @@ class Apartado(models.Model):
 
 
 class Venta(models.Model):
+    """Registro inmutable generado al aceptar un apartado; congela el precio del mueble en ese momento."""
+    # PROTECT resguarda el historial contable impidiendo borrar el apartado o mueble vendido.
     apartado = models.OneToOneField(
         Apartado,
         related_name='venta',

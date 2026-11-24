@@ -1,3 +1,5 @@
+"""Configuración del panel de Django Admin para consultar catálogo, inventario y auditoría."""
+
 from django.contrib import admin
 from django.utils.html import format_html
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
@@ -8,6 +10,7 @@ admin.site.index_title = "Gestión del Catálogo e Inventario"
 
 
 class MuebleInline(admin.TabularInline):
+    """Muestra los muebles asociados dentro de la ficha de un Proveedor o Categoría."""
     model = Mueble
     extra = 0
     fields = ('nombre', 'precio', 'stock', 'creado_en')
@@ -17,6 +20,7 @@ class MuebleInline(admin.TabularInline):
 
 @admin.register(Proveedor)
 class ProveedorAdmin(admin.ModelAdmin):
+    """Administración de proveedores con conteo y listado embebido de sus muebles."""
     list_display = ('id', 'nombre', 'contacto', 'telefono', 'email', 'total_muebles', 'creado_en')
     search_fields = ('nombre', 'contacto', 'email', 'telefono')
     list_filter = ('creado_en',)
@@ -29,6 +33,7 @@ class ProveedorAdmin(admin.ModelAdmin):
 
 @admin.register(Categoria)
 class CategoriaAdmin(admin.ModelAdmin):
+    """Administración de categorías con resumen truncado de descripción y total de muebles."""
     list_display = ('id', 'nombre', 'descripcion_corta', 'total_muebles')
     search_fields = ('nombre', 'descripcion')
     inlines = [MuebleInline]
@@ -46,6 +51,7 @@ class CategoriaAdmin(admin.ModelAdmin):
 
 @admin.register(Mueble)
 class MuebleAdmin(admin.ModelAdmin):
+    """Vista de inventario con miniaturas, precio MXN y semáforo de stock por color."""
     list_display = (
         'id',
         'imagen_preview',
@@ -83,6 +89,7 @@ class MuebleAdmin(admin.ModelAdmin):
     precio_formateado.short_description = 'Precio (MXN)'
     precio_formateado.admin_order_field = 'precio'
 
+    # Semáforo visual: rojo agotado (0), ámbar bajo stock (<=3), verde disponible.
     def stock_badge(self, obj):
         if obj.stock == 0:
             color = "#dc2626"
@@ -119,6 +126,7 @@ class MuebleAdmin(admin.ModelAdmin):
 
 @admin.register(Favorito)
 class FavoritoAdmin(admin.ModelAdmin):
+    """Consulta de favoritos guardados por los clientes."""
     list_display = ('id', 'usuario', 'mueble', 'fecha_agregado')
     list_filter = ('fecha_agregado',)
     search_fields = ('usuario__username', 'usuario__email', 'mueble__nombre')
@@ -127,7 +135,7 @@ class FavoritoAdmin(admin.ModelAdmin):
 
 @admin.register(Apartado)
 class ApartadoAdmin(admin.ModelAdmin):
-    # Solo lectura: aceptar/rechazar va por la API para mantener stock y ventas consistentes.
+    """Solo lectura: crear/aceptar/rechazar pasa por la API para mantener stock y ventas sincronizados."""
     list_display = ('codigo', 'usuario', 'mueble', 'cantidad', 'estado', 'creado_en')
     list_filter = ('estado', 'creado_en')
     search_fields = ('usuario__username', 'mueble__nombre')
@@ -141,6 +149,7 @@ class ApartadoAdmin(admin.ModelAdmin):
 
 @admin.register(Venta)
 class VentaAdmin(admin.ModelAdmin):
+    """Solo lectura: las ventas nacen únicamente al aceptar un apartado desde la API."""
     list_display = ('id', 'apartado', 'precio_unitario', 'total', 'fecha_venta')
     list_filter = ('fecha_venta',)
     search_fields = ('apartado__usuario__username', 'apartado__mueble__nombre')

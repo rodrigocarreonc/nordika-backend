@@ -2,19 +2,30 @@
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+import tempfile
 from unittest.mock import patch
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models import QuerySet
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
+# GIF 1x1 válido para que Pillow acepte el ImageField.
+GIF_1PX = bytes.fromhex('47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b')
+
+
+def foto():
+    return SimpleUploadedFile('mueble.gif', GIF_1PX, content_type='image/gif')
+
+
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 
 
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class NordikaBackendTests(APITestCase):
     """Valida reglas de negocio, seguridad por rol y casos borde críticos sobre los endpoints REST."""
     def setUp(self):
@@ -295,6 +306,29 @@ class NordikaBackendTests(APITestCase):
             'proveedor_id': self.proveedor.id,
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_mueble_validation_requires_photo_on_create(self):
+        self._admin_client()
+        response = self.client.post('/muebles/', {
+            'nombre': 'Mueble Sin Foto',
+            'precio': '100.00',
+            'stock': 5,
+            'proveedor_id': self.proveedor.id,
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('imagen', response.data)
+
+    def test_mueble_validation_decimal_stock(self):
+        self._admin_client()
+        response = self.client.post('/muebles/', {
+            'nombre': 'Mueble Stock Decimal',
+            'precio': '100.00',
+            'stock': '2.5',
+            'proveedor_id': self.proveedor.id,
+            'imagen': foto(),
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('stock', response.data)
 
     # 6. CUSTOM ACTIONS (Favoritos)
     def test_toggle_favorito(self):
@@ -607,6 +641,7 @@ class NordikaBackendTests(APITestCase):
             'stock': 4,
             'proveedor_id': self.proveedor.id,
             'categoria_id': self.categoria.id,
+            'imagen': foto(),
         })
         self.assertEqual(mueble_res.status_code, status.HTTP_201_CREATED)
         mueble_id = mueble_res.data['id']

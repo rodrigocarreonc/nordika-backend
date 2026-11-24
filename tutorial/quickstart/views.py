@@ -1,13 +1,10 @@
-"""Vistas y ViewSets REST de Nordika: autenticación, catálogo, favoritos, apartados y SSE."""
+"""Vistas y ViewSets REST de Nordika: autenticación, catálogo, favoritos y ciclo de apartados."""
 
-import queue
 import uuid
 
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import ProtectedError
-from django.http import JsonResponse, StreamingHttpResponse
-from django.views.decorators.http import require_GET
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, mixins, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
@@ -16,12 +13,10 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from . import realtime
 from .filters import ApartadoFilter, MuebleFilter
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor
 from .pagination import ConfigurablePageNumberPagination
 from .permissions import IsAdminOrReadOnly
-from .realtime import broker, format_sse_event, publish_event
 from .serializers import (
     ApartadoSerializer,
     CategoriaSerializer,
@@ -268,13 +263,10 @@ class MuebleViewSet(viewsets.ModelViewSet):
             )
         try:
             with transaction.atomic():
-                apartados_eliminados, _ = instance.apartados.filter(
+                instance.apartados.filter(
                     estado__in=[Apartado.RECHAZADO, Apartado.CANCELADO],
                     venta__isnull=True,
                 ).delete()
-                if apartados_eliminados:
-                    # Asegura el aviso de borrado masivo de apartados cerrados tras confirmar el commit.
-                    publish_event('apartado', 'deleted', None)
                 instance.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ProtectedError as e:
@@ -294,12 +286,7 @@ class MuebleViewSet(viewsets.ModelViewSet):
         borrados, _ = Favorito.objects.filter(usuario=request.user, mueble=mueble).delete()
         is_favorito = not borrados
         if is_favorito:
-            favorito, creado = Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
-            if not creado:
-                # Si hubo carrera por doble toque, emitimos igual el favorito para sincronizar clientes.
-                publish_event('favorito', 'created', favorito.pk)
-        # Notificamos el mueble porque cambian sus campos derivados (is_favorito y favoritos_count).
-        publish_event('mueble', 'updated', mueble.pk)
+            Favorito.objects.get_or_create(usuario=request.user, mueble=mueble)
         msg = "Mueble agregado a favoritos." if is_favorito else "Mueble eliminado de favoritos."
 
         total_favoritos = mueble.favoritos.count()
@@ -408,74 +395,3 @@ class ApartadoViewSet(mixins.CreateModelMixin,
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def rechazar(self, request, pk=None):
         return self._resolver(pk, Apartado.RECHAZADO)
-
-
-# ==========================================
-# 6. TIEMPO REAL (SERVER-SENT EVENTS)
-# ==========================================
-
-def _authenticate_sse_token(request):
-    """Valida el token DRF desde Authorization o ?token= para soportar EventSource en web.
-
-    EventSource en navegadores no permite cabeceras personalizadas, así que se acepta
-    el token por query string únicamente cuando no viene cabecera Authorization.
-    """
-    auth_header = request.META.get('HTTP_AUTHORIZATION', '').strip()
-    token_key = None
-    if auth_header:
-        parts = auth_header.split()
-        if len(parts) == 2 and parts[0].lower() == 'token':
-            token_key = parts[1]
-    else:
-        token_key = (request.GET.get('token') or '').strip()
-
-    if not token_key:
-        return None
-
-    token = (
-        Token.objects.select_related('user')
-        .filter(key=token_key, user__is_active=True)
-        .first()
-    )
-    return token.user if token else None
-
-
-@require_GET
-def events_stream(request):
-    """Entrega un flujo SSE en vivo con cambios de catálogo, apartados y favoritos.
-
-    Se define como vista estándar de Django (sin @api_view de DRF) para que la negociación
-    de contenido de DRF nunca rechace `Accept: text/event-stream` con 406.
-    """
-    user = _authenticate_sse_token(request)
-    if user is None:
-        return JsonResponse(
-            {'detail': 'Credenciales de autenticación inválidas o ausentes.'},
-            status=401,
-        )
-
-    # Permite cerrar el flujo justo tras el handshake en pruebas o chequeos rápidos (?once=1).
-    once = request.GET.get('once', '').lower() in ('1', 'true', 'yes')
-
-    def event_generator():
-        # Suscribe al broker antes del handshake para no perder eventos durante el arranque del flujo.
-        with broker.subscribe() as subscriber_queue:
-            yield format_sse_event('connected', {'status': 'ok'})
-            if once:
-                return
-            while True:
-                try:
-                    event = subscriber_queue.get(timeout=realtime.SSE_KEEPALIVE_SECONDS)
-                    yield format_sse_event('update', event)
-                except queue.Empty:
-                    # Comentario SSE periódico para mantener viva la conexión sin alterar el estado del cliente.
-                    yield ': keepalive\n\n'
-
-    response = StreamingHttpResponse(
-        event_generator(),
-        content_type='text/event-stream; charset=utf-8',
-    )
-    # Evita caché y buffering en proxies; no se fija `Connection` porque WSGI prohíbe cabeceras hop-by-hop.
-    response['Cache-Control'] = 'no-cache'
-    response['X-Accel-Buffering'] = 'no'
-    return response

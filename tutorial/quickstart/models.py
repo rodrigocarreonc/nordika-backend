@@ -158,8 +158,6 @@ class Apartado(models.Model):
         Pasa el apartado de PENDIENTE a nuevo_estado: registra la venta si se acepta o devuelve
         la cantidad al stock si no. Regresa False si otra petición ya lo había cerrado.
         """
-        from .realtime import publish_event
-
         # El UPDATE condicional es el candado: SQLite ignora select_for_update y dos
         # peticiones podían leer el mismo pendiente y devolver su stock dos veces.
         with transaction.atomic():
@@ -168,15 +166,11 @@ class Apartado(models.Model):
             )
             if not cerrado:
                 return False
-            # QuerySet.update() omite la señal post_save; notificamos el apartado tras el commit.
-            publish_event('apartado', 'updated', self.pk)
             if nuevo_estado == self.ACEPTADO:
                 precio = self.mueble.precio
                 Venta.objects.create(apartado=self, precio_unitario=precio, total=precio * self.cantidad)
             else:
                 Mueble.objects.filter(pk=self.mueble_id).update(stock=F('stock') + self.cantidad)
-                # Notificamos también el mueble porque el stock se repuso mediante UPDATE directo.
-                publish_event('mueble', 'updated', self.mueble_id)
         self.refresh_from_db(fields=['estado', 'actualizado_en'])
         return True
 

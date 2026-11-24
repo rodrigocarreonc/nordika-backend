@@ -9,7 +9,6 @@ from django.db.models import F
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
-from .realtime import publish_event
 
 
 def validar_password(password, user):
@@ -341,8 +340,6 @@ class ApartadoSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'cantidad': f"Stock insuficiente. El stock actual es de {mueble.stock} unidades."
                 })
-            # El UPDATE atómico del stock omite post_save; programamos el aviso SSE tras el commit.
-            publish_event('mueble', 'updated', mueble.pk)
             validated_data['usuario'] = self.context['request'].user
             apartado = super().create(validated_data)
         apartado.mueble.refresh_from_db()

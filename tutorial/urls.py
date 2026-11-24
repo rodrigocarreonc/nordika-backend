@@ -12,7 +12,6 @@ from tutorial.quickstart.views import (
     LogoutView,
     RegisterView,
     ResetTokenView,
-    events_stream,
     me,
 )
 
@@ -32,9 +31,6 @@ auth_urlpatterns = [
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
-    # Flujo SSE en tiempo real disponible tanto en raíz como bajo /api/.
-    path('events/', events_stream, name='events_stream'),
-    path('api/events/', events_stream, name='api_events_stream'),
     *auth_urlpatterns,
     path('', include('tutorial.quickstart.urls')),
     path('api/', include('tutorial.quickstart.urls')),

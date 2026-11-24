@@ -4,7 +4,7 @@ import os
 import sys
 
 
-# Punto de entrada CLI de Django para ejecutar migraciones, pruebas y servidor local.
+# Django CLI entry point to run migrations, tests and the local server.
 def main():
     """Run administrative tasks."""
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'tutorial.settings')

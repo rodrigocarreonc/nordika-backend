@@ -1,2 +1,2 @@
-"""Paquete principal de configuración y enrutamiento del backend de Nordika."""
+"""Main configuration and routing package of the Nordika backend."""
 

@@ -1,14 +1,14 @@
-"""Paginación configurable por query string para listas de la API."""
+"""Query-string configurable pagination for API lists."""
 
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 
 class ConfigurablePageNumberPagination(PageNumberPagination):
-    """Permite al cliente elegir cuantos elementos pedir vía `?page_size=` (hasta 100).
+    """Lets the client choose how many items to request via `?page_size=` (up to 100).
 
-    Se exponen `total_pages` y `current_page` además del formato estándar de DRF para que
-    la barra de paginación en la app muestre números de página sin recalcularlos.
+    `total_pages` and `current_page` are exposed on top of the standard DRF format so the
+    app's pagination bar can show page numbers without recomputing them.
     """
     page_size = 10
     page_size_query_param = 'page_size'

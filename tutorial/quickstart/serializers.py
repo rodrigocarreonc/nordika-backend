@@ -1,4 +1,4 @@
-"""Serializers de DRF para validación, formato de respuesta y operaciones atómicas de escritura."""
+"""DRF serializers for validation, response shape and atomic write operations."""
 
 from decimal import Decimal
 from django.contrib.auth.models import User
@@ -8,11 +8,11 @@ from django.db import transaction
 from django.db.models import F
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
-from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
+from .models import Category, Favorite, Furniture, Reservation, Sale, Supplier
 
 
-def validar_password(password, user):
-    """Aplica AUTH_PASSWORD_VALIDATORS y convierte los errores de Django al formato de DRF."""
+def validate_password_rules(password, user):
+    """Applies AUTH_PASSWORD_VALIDATORS and converts Django errors to the DRF format."""
     try:
         validate_password(password, user)
     except DjangoValidationError as e:
@@ -20,7 +20,7 @@ def validar_password(password, user):
 
 
 class UserSerializer(serializers.ModelSerializer):
-    """Representación básica de usuario con campos administrativos protegidos como solo lectura."""
+    """Basic user representation with administrative fields protected as read-only."""
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'is_staff', 'first_name', 'last_name', 'date_joined']
@@ -28,7 +28,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
-    """Edición del perfil propio (`/me/`): impide cambiar username o privilegios y exige correo único."""
+    """Own-profile editing (`/me/`): blocks changing username or privileges and requires a unique email."""
     email = serializers.EmailField(required=False, allow_blank=False)
 
     class Meta:
@@ -36,7 +36,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'date_joined']
         read_only_fields = ['id', 'username', 'is_staff', 'date_joined']
 
-    # Normaliza el correo a minusculas y excluye al propio usuario para permitir guardar sin cambios.
+    # Lowercases the email and excludes the user itself so saving without changes is allowed.
     def validate_email(self, value):
         if not value or not value.strip():
             raise serializers.ValidationError('El correo electrónico no puede estar vacío.')
@@ -50,7 +50,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    """Autoregistro público de clientes: válida unicidad, fortaleza de contraseña y crea el token."""
+    """Public customer sign-up: validates uniqueness and password strength, and creates the token."""
     password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)
     email = serializers.EmailField(required=True)
@@ -74,8 +74,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         password_confirm = attrs.get('password_confirm')
         if password_confirm and attrs['password'] != password_confirm:
             raise serializers.ValidationError({'password_confirm': "Las contraseñas no coinciden."})
-        # Usuario sin guardar: solo para que el validador compare la contraseña con sus datos
-        validar_password(attrs['password'], User(**{k: attrs.get(k, '') for k in ('username', 'email', 'first_name', 'last_name')}))
+        # Unsaved user: only so the validator can compare the password against the user's data
+        validate_password_rules(attrs['password'], User(**{k: attrs.get(k, '') for k in ('username', 'email', 'first_name', 'last_name')}))
         return attrs
 
     def create(self, validated_data):
@@ -91,8 +91,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
-class ClienteCreateSerializer(serializers.ModelSerializer):
-    """Alta de clientes desde el panel admin: sanitiza texto y fuerza is_staff=False para evitar escalación."""
+class CustomerCreateSerializer(serializers.ModelSerializer):
+    """Customer creation from the admin panel: trims text and forces is_staff=False to prevent escalation."""
     password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=False)
     email = serializers.EmailField(required=True)
@@ -131,8 +131,8 @@ class ClienteCreateSerializer(serializers.ModelSerializer):
         password_confirm = attrs.get('password_confirm')
         if password_confirm and attrs.get('password') != password_confirm:
             raise serializers.ValidationError({'password_confirm': "Las contraseñas no coinciden."})
-        # Usuario sin guardar: solo para que el validador compare la contraseña con sus datos
-        validar_password(attrs['password'], User(**{k: attrs.get(k, '') for k in ('username', 'email', 'first_name', 'last_name')}))
+        # Unsaved user: only so the validator can compare the password against the user's data
+        validate_password_rules(attrs['password'], User(**{k: attrs.get(k, '') for k in ('username', 'email', 'first_name', 'last_name')}))
         return attrs
 
     def create(self, validated_data):
@@ -150,98 +150,98 @@ class ClienteCreateSerializer(serializers.ModelSerializer):
         return user
 
 
-class CategoriaSerializer(serializers.ModelSerializer):
-    """Incluye el conteo de muebles para mostrarlo en el panel admin y filtros."""
-    muebles_count = serializers.SerializerMethodField(read_only=True)
+class CategorySerializer(serializers.ModelSerializer):
+    """Includes the furniture count to show it in the admin panel and filters."""
+    furniture_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
-        model = Categoria
-        fields = ['id', 'nombre', 'descripcion', 'muebles_count']
+        model = Category
+        fields = ['id', 'name', 'description', 'furniture_count']
 
-    def get_muebles_count(self, obj):
-        return obj.muebles.count()
+    def get_furniture_count(self, obj):
+        return obj.furniture.count()
 
 
-class ProveedorSerializer(serializers.ModelSerializer):
-    """Incluye muebles_count para advertir al admin cuando un proveedor tiene articulos ligados."""
-    muebles_count = serializers.SerializerMethodField(read_only=True)
+class SupplierSerializer(serializers.ModelSerializer):
+    """Includes furniture_count to warn the admin when a supplier has linked items."""
+    furniture_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
-        model = Proveedor
-        fields = ['id', 'nombre', 'contacto', 'telefono', 'email', 'creado_en', 'muebles_count']
+        model = Supplier
+        fields = ['id', 'name', 'contact_name', 'phone', 'email', 'created_at', 'furniture_count']
 
-    def get_muebles_count(self, obj):
-        return obj.muebles.count()
+    def get_furniture_count(self, obj):
+        return obj.furniture.count()
 
 
-# Serializers reducidos para embeber categoría y proveedor dentro de Mueble sin consultas extra.
-class MuebleNestedCategoriaSerializer(serializers.ModelSerializer):
+# Reduced serializers to embed category and supplier inside Furniture without extra queries.
+class FurnitureNestedCategorySerializer(serializers.ModelSerializer):
     class Meta:
-        model = Categoria
-        fields = ['id', 'nombre', 'descripcion']
+        model = Category
+        fields = ['id', 'name', 'description']
 
 
-class MuebleNestedProveedorSerializer(serializers.ModelSerializer):
+class FurnitureNestedSupplierSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Proveedor
-        fields = ['id', 'nombre', 'contacto', 'telefono', 'email']
+        model = Supplier
+        fields = ['id', 'name', 'contact_name', 'phone', 'email']
 
 
-class MuebleSerializer(serializers.ModelSerializer):
-    """Devuelve categoría/proveedor anidados al leer, pero acepta categoria_id/proveedor_id al escribir.
+class FurnitureSerializer(serializers.ModelSerializer):
+    """Returns nested category/supplier on read, but accepts category_id/supplier_id on write.
 
-    Esta separación simplifica los formularios multipart de la app sin perder datos listos para UI.
+    This split keeps the app's multipart forms simple without losing UI-ready data.
     """
-    categoria = MuebleNestedCategoriaSerializer(read_only=True)
-    proveedor = MuebleNestedProveedorSerializer(read_only=True)
+    category = FurnitureNestedCategorySerializer(read_only=True)
+    supplier = FurnitureNestedSupplierSerializer(read_only=True)
 
-    categoria_id = serializers.PrimaryKeyRelatedField(
-        queryset=Categoria.objects.all(),
-        source='categoria',
+    category_id = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.all(),
+        source='category',
         write_only=True,
         required=False,
         allow_null=True
     )
-    proveedor_id = serializers.PrimaryKeyRelatedField(
-        queryset=Proveedor.objects.all(),
-        source='proveedor',
+    supplier_id = serializers.PrimaryKeyRelatedField(
+        queryset=Supplier.objects.all(),
+        source='supplier',
         write_only=True,
         required=True
     )
 
-    is_favorito = serializers.SerializerMethodField(read_only=True)
-    favoritos_count = serializers.SerializerMethodField(read_only=True)
+    is_favorite = serializers.SerializerMethodField(read_only=True)
+    favorites_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
-        model = Mueble
+        model = Furniture
         fields = [
             'id',
-            'nombre',
-            'descripcion',
-            'precio',
+            'name',
+            'description',
+            'price',
             'stock',
-            'imagen',
-            'categoria',
-            'proveedor',
-            'categoria_id',
-            'proveedor_id',
-            'is_favorito',
-            'favoritos_count',
-            'creado_en',
-            'actualizado_en',
+            'image',
+            'category',
+            'supplier',
+            'category_id',
+            'supplier_id',
+            'is_favorite',
+            'favorites_count',
+            'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['id', 'creado_en', 'actualizado_en']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
-    def get_is_favorito(self, obj):
+    def get_is_favorite(self, obj):
         request = self.context.get('request')
         if request and request.user and request.user.is_authenticated:
-            return Favorito.objects.filter(usuario=request.user, mueble=obj).exists()
+            return Favorite.objects.filter(user=request.user, furniture=obj).exists()
         return False
 
-    def get_favoritos_count(self, obj):
-        return obj.favoritos.count()
+    def get_favorites_count(self, obj):
+        return obj.favorites.count()
 
-    def validate_precio(self, value):
+    def validate_price(self, value):
         if value <= Decimal('0'):
             raise serializers.ValidationError("El precio debe ser mayor que 0.")
         return value
@@ -252,101 +252,99 @@ class MuebleSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        # Solo al crear: al editar se conserva la foto que ya tiene.
-        if self.instance is None and not attrs.get('imagen'):
-            raise serializers.ValidationError({'imagen': "La foto del mueble es obligatoria."})
+        # Only on create: editing keeps the photo it already has.
+        if self.instance is None and not attrs.get('image'):
+            raise serializers.ValidationError({'image': "La foto del mueble es obligatoria."})
         return attrs
 
-    def validate_nombre(self, value):
+    def validate_name(self, value):
         val = value.strip()
         if len(val) < 2:
             raise serializers.ValidationError("El nombre debe tener al menos 2 caracteres.")
         return val
 
 
-class FavoritoSerializer(serializers.ModelSerializer):
-    """Asocia siempre el favorito al usuario autenticado y evita duplicados por mueble."""
-    mueble = MuebleSerializer(read_only=True)
-    mueble_id = serializers.PrimaryKeyRelatedField(
-        queryset=Mueble.objects.all(),
-        source='mueble',
+class FavoriteSerializer(serializers.ModelSerializer):
+    """Always ties the favorite to the authenticated user and avoids duplicates per furniture."""
+    furniture = FurnitureSerializer(read_only=True)
+    furniture_id = serializers.PrimaryKeyRelatedField(
+        queryset=Furniture.objects.all(),
+        source='furniture',
         write_only=True
     )
 
     class Meta:
-        model = Favorito
-        fields = ['id', 'usuario', 'mueble', 'mueble_id', 'fecha_agregado']
-        read_only_fields = ['id', 'usuario', 'fecha_agregado']
+        model = Favorite
+        fields = ['id', 'user', 'furniture', 'furniture_id', 'added_at']
+        read_only_fields = ['id', 'user', 'added_at']
 
     def validate(self, attrs):
         user = self.context['request'].user
-        mueble = attrs.get('mueble')
-        if Favorito.objects.filter(usuario=user, mueble=mueble).exists():
+        furniture = attrs.get('furniture')
+        if Favorite.objects.filter(user=user, furniture=furniture).exists():
             raise serializers.ValidationError("Este mueble ya se encuentra en tus favoritos.")
         return attrs
 
     def create(self, validated_data):
-        user = self.context['request'].user
-        validated_data['usuario'] = user
+        validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
 
 
-class VentaSerializer(serializers.ModelSerializer):
-    """Resumen embebido de la venta cuando un apartado ya fue aceptado."""
+class SaleSerializer(serializers.ModelSerializer):
+    """Embedded sale summary once a reservation has been accepted."""
     class Meta:
-        model = Venta
-        fields = ['id', 'precio_unitario', 'total', 'fecha_venta']
+        model = Sale
+        fields = ['id', 'unit_price', 'total', 'sold_at']
 
 
-class ApartadoSerializer(serializers.ModelSerializer):
-    """Expone datos de contacto del cliente para el staff y descuenta stock de forma atómica al crear."""
-    mueble = MuebleSerializer(read_only=True)
-    mueble_id = serializers.PrimaryKeyRelatedField(
-        queryset=Mueble.objects.all(),
-        source='mueble',
+class ReservationSerializer(serializers.ModelSerializer):
+    """Exposes customer contact data to staff and atomically deducts stock on create."""
+    furniture = FurnitureSerializer(read_only=True)
+    furniture_id = serializers.PrimaryKeyRelatedField(
+        queryset=Furniture.objects.all(),
+        source='furniture',
         write_only=True
     )
-    usuario_username = serializers.CharField(source='usuario.username', read_only=True)
-    usuario_email = serializers.CharField(source='usuario.email', read_only=True)
-    usuario_nombre = serializers.SerializerMethodField(read_only=True)
-    usuario_activo = serializers.BooleanField(source='usuario.is_active', read_only=True)
-    codigo = serializers.ReadOnlyField()
-    expira_en = serializers.DateTimeField(read_only=True)
-    venta = VentaSerializer(read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    user_full_name = serializers.SerializerMethodField(read_only=True)
+    user_active = serializers.BooleanField(source='user.is_active', read_only=True)
+    code = serializers.ReadOnlyField()
+    expires_at = serializers.DateTimeField(read_only=True)
+    sale = SaleSerializer(read_only=True)
 
     class Meta:
-        model = Apartado
+        model = Reservation
         fields = [
-            'id', 'codigo', 'usuario', 'usuario_username', 'usuario_email', 'usuario_nombre',
-            'usuario_activo', 'mueble', 'mueble_id', 'cantidad', 'estado', 'venta', 'expira_en', 'creado_en', 'actualizado_en',
+            'id', 'code', 'user', 'user_username', 'user_email', 'user_full_name',
+            'user_active', 'furniture', 'furniture_id', 'quantity', 'status', 'sale', 'expires_at', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'usuario', 'estado', 'creado_en', 'actualizado_en']
+        read_only_fields = ['id', 'user', 'status', 'created_at', 'updated_at']
 
-    def get_usuario_nombre(self, obj):
-        if not obj.usuario:
+    def get_user_full_name(self, obj):
+        if not obj.user:
             return ""
-        first = (obj.usuario.first_name or "").strip()
-        last = (obj.usuario.last_name or "").strip()
-        full = f"{first} {last}".strip()
-        return full
+        first = (obj.user.first_name or "").strip()
+        last = (obj.user.last_name or "").strip()
+        return f"{first} {last}".strip()
 
-    def validate_cantidad(self, value):
+    def validate_quantity(self, value):
         if value < 1:
             raise serializers.ValidationError("La cantidad debe ser mayor que 0.")
         return value
 
     def create(self, validated_data):
-        mueble = validated_data['mueble']
-        cantidad = validated_data['cantidad']
+        furniture = validated_data['furniture']
+        quantity = validated_data['quantity']
         with transaction.atomic():
-            # Descuento condicional en una sola consulta: evita sobre-apartar con peticiones concurrentes.
-            updated = Mueble.objects.filter(pk=mueble.pk, stock__gte=cantidad).update(stock=F('stock') - cantidad)
+            # Conditional decrement in a single query: prevents over-reserving with concurrent requests.
+            updated = Furniture.objects.filter(pk=furniture.pk, stock__gte=quantity).update(stock=F('stock') - quantity)
             if not updated:
-                mueble.refresh_from_db()
+                furniture.refresh_from_db()
                 raise serializers.ValidationError({
-                    'cantidad': f"Stock insuficiente. El stock actual es de {mueble.stock} unidades."
+                    'quantity': f"Stock insuficiente. El stock actual es de {furniture.stock} unidades."
                 })
-            validated_data['usuario'] = self.context['request'].user
-            apartado = super().create(validated_data)
-        apartado.mueble.refresh_from_db()
-        return apartado
+            validated_data['user'] = self.context['request'].user
+            reservation = super().create(validated_data)
+        reservation.furniture.refresh_from_db()
+        return reservation

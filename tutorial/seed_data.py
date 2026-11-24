@@ -1,8 +1,14 @@
+"""Script idempotente de sembrado para poblar la base local con catálogo y cuentas demo.
+
+Se ejecuta de forma independiente (`python tutorial/seed_data.py`) para tener datos listos
+de prueba sin duplicar registros si se corre más de una vez.
+"""
+
 import os
 import sys
 from pathlib import Path
 
-# Setup django environment
+# Inicializa el entorno de Django manualmente porque el script corre fuera de manage.py.
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'tutorial.settings')
@@ -20,20 +26,17 @@ import io
 
 
 def create_furniture_image(text, bg_color=(235, 230, 222), fg_color=(45, 55, 72)):
-    """Generates an elegant minimalist placeholder image for furniture."""
+    """Genera una imagen JPEG local en memoria para que el catálogo no dependa de URLs externas."""
     width, height = 600, 450
     img = Image.new('RGB', (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
 
-    # Draw border and geometric accent (Scandinavian minimalist style)
+    # Marco y silueta geométrica minimalista para diferenciar visualmente las tarjetas.
     draw.rectangle([20, 20, width - 20, height - 20], outline=(200, 195, 185), width=2)
     draw.rectangle([40, 40, width - 40, 180], fill=(220, 215, 205))
-
-    # Furniture icon silhouette (simple geometric couch/table representation)
     draw.rounded_rectangle([70, 70, width - 70, 150], radius=15, fill=(180, 175, 165))
     draw.rounded_rectangle([100, 100, width - 100, 160], radius=8, fill=(160, 155, 145))
 
-    # Text
     draw.text((width // 2, 240), "NORDIKA", fill=(120, 105, 90), anchor="mm")
     draw.text((width // 2, 280), text, fill=fg_color, anchor="mm")
     draw.text((width // 2, 330), "Diseño Nórdico Minimalista", fill=(140, 140, 140), anchor="mm")
@@ -44,9 +47,10 @@ def create_furniture_image(text, bg_color=(235, 230, 222), fg_color=(45, 55, 72)
 
 
 def seed():
+    """Crea usuarios demo, catálogo inicial y favoritos usando get_or_create para idempotencia."""
     print("Iniciando creación de datos iniciales...")
 
-    # 1. Usuarios
+    # 1. Usuarios demo (admin y cliente) con contraseñas conocidas y token pre-generado.
     admin_user, _ = User.objects.get_or_create(
         username='admin',
         defaults={

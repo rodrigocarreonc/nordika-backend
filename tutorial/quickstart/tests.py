@@ -1,3 +1,5 @@
+"""Suite de pruebas de integración de la API REST (auth, catálogo, apartados, concurrencia y permisos)."""
+
 from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -14,6 +16,7 @@ from .models import Apartado, Categoria, Favorito, Mueble, Proveedor, Venta
 
 
 class NordikaBackendTests(APITestCase):
+    """Valida reglas de negocio, seguridad por rol y casos borde críticos sobre los endpoints REST."""
     def setUp(self):
         # Crear usuarios
         self.user = User.objects.create_user(
@@ -684,4 +687,5 @@ class NordikaBackendTests(APITestCase):
         }, format='json')
         self.assertEqual(res_api.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.filter(username='cliente_api_prefix').exists())
+
 
